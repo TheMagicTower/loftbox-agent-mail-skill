@@ -1,4 +1,4 @@
 interface:
   display_name: "Register LoftBox Mail Agent"
   short_description: "Onboard an agent mailbox to LoftBox beta"
-  default_prompt: "Use $register-loftbox-mail-agent to register my LoftBox personal beta mail agent; ask me for owner_email, organization_name, agent_external_id, agent_name, agent_slug, mailbox_local_part, and optional webhook_url."
+  default_prompt: "Use $register-loftbox-mail-agent to register this agent for LoftBox personal beta; ask me only for my owner email."

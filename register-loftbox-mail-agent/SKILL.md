@@ -19,24 +19,35 @@ For explicit targets, the installer supports `--agent codex`, `--agent claude`, 
 
 ## Inputs
 
-Collect these values before calling the API:
+Personal beta customer input is intentionally minimal. Ask the user only for:
 
 - `owner_email`: email address of the agent owner. LoftBox sends the verification token here.
-- `organization_name`: personal beta organization name.
-- `slug`: optional organization slug; omit if the user wants LoftBox to derive one.
+
+Derive these values without asking the user, unless derivation is impossible or the user explicitly asks to override them:
+
+- `organization_name`: derive from the owner email and agent label, such as `owner-local LoftBox Agents`.
+- `slug`: derive from `organization_name`.
 - `agent_external_id`: stable lowercase agent ID, unique inside the organization.
-- `agent_name`: human-readable agent name.
-- `agent_slug`: lowercase agent slug.
-- `mailbox_local_part`: local part for the mailbox address.
-- `domain_id`: optional verified LoftBox domain ID. If missing, create the agent first and ask the user to verify a domain before production sending.
-- `webhook_url`: optional HTTPS endpoint for inbound events.
+- `agent_name`: derive from the current agent/runtime name; fall back to `LoftBox Agent`.
+- `agent_slug`: derive from `agent_name`.
+- `mailbox_local_part`: derive from `agent_slug`.
+- `domain_id`: omit for the personal beta default-domain path unless the user explicitly provides a verified domain.
+- `webhook_url`: omit unless the current agent has an HTTPS inbound webhook.
 - `base_url`: default to `https://api.loftbox.net`.
 
 `agent_external_id` must use lowercase letters, numbers, `_`, `.`, `:`, or `-`, up to 128 characters. Example: `hermes:support-agent`.
 
+Use a stable derivation order for `agent_external_id`:
+
+1. Current agent identity from local runtime/config, if available.
+2. Agent product/runtime name plus stable instance or workspace identifier, if available.
+3. Normalized `agent_name`.
+
+If the derived `agent_external_id` collides with an unrelated existing agent, ask one short question for a distinguishing label, then retry with a new derived ID.
+
 ## Workflow
 
-1. Register the personal beta organization:
+1. Register the personal beta organization. Use the derived `organization_name` and `slug`; do not ask the user for them.
 
 ```bash
 curl -sS -X POST "$BASE_URL/v1/auth/signup" \
@@ -86,7 +97,7 @@ curl -sS -X POST "$BASE_URL/v1/agents" \
 
 Valid `policy_scope` values are `workspace`, `agent`, or `mailbox`.
 
-6. Create the mailbox after a domain is verified:
+6. Create the mailbox on the LoftBox default domain:
 
 ```bash
 curl -sS -X POST "$BASE_URL/v1/agents/agent_uuid/mailboxes" \
@@ -94,14 +105,13 @@ curl -sS -X POST "$BASE_URL/v1/agents/agent_uuid/mailboxes" \
   -H "Content-Type: application/json" \
   -d '{
     "local_part": "support-agent",
-    "domain_id": "domain_uuid",
     "display_name": "Support Agent",
     "webhook_url": "https://example.com/webhooks/loftbox",
     "retention_days": 7
   }'
 ```
 
-Omit `domain_id` only for non-production testing if the API allows the default domain path. Production sending requires a verified domain.
+Omit `webhook_url` when the current agent does not have an inbound HTTPS endpoint. Custom domains are not required for personal beta registration; only use `domain_id` when the user explicitly supplies a verified domain.
 
 ## Guardrails
 

@@ -152,6 +152,6 @@ Use this prompt with your agent:
   If the LoftBox mail skill is missing, install it with:
   curl -fsSL https://loftbox.net/install.sh | sh
 
-  Then use the register-loftbox-mail-agent skill to register my LoftBox personal beta mail agent.
-  Ask me for owner_email, organization_name, agent_external_id, agent_name, agent_slug, mailbox_local_part, and optional webhook_url.
+  Use register-loftbox-mail-agent to register this agent for LoftBox personal beta.
+  Ask me only for my owner email.
 EOF
