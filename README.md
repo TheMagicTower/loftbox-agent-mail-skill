@@ -1,17 +1,29 @@
 # LoftBox Agent Mail Skill
 
-Public Codex skill for registering an AI agent with LoftBox personal beta email.
+Public agent skill for registering an AI agent with LoftBox personal beta email.
 
 ## One-Line Install
 
 ```bash
-git clone https://github.com/TheMagicTower/loftbox-agent-mail-skill.git /tmp/loftbox-agent-mail-skill && mkdir -p ~/.codex/skills && cp -R /tmp/loftbox-agent-mail-skill/register-loftbox-mail-agent ~/.codex/skills/
+curl -fsSL https://loftbox.net/install.sh | sh
+```
+
+The installer auto-detects common local agent skill directories. Use an explicit target when needed:
+
+```bash
+curl -fsSL https://loftbox.net/install.sh | sh -s -- --agent codex
+curl -fsSL https://loftbox.net/install.sh | sh -s -- --agent claude
+curl -fsSL https://loftbox.net/install.sh | sh -s -- --target "$HOME/.my-agent/skills"
 ```
 
 ## Agent Prompt
 
 ```text
-Use $register-loftbox-mail-agent to onboard my LoftBox personal beta agent. Owner email: <owner@example.com>. Organization: <org name>. Agent external_id: <stable-agent-id>. Agent name: <name>. Mailbox local_part: <local-part>.
+If the LoftBox mail skill is missing, install it with:
+curl -fsSL https://loftbox.net/install.sh | sh
+
+Then use the register-loftbox-mail-agent skill to register my LoftBox personal beta mail agent.
+Ask me for owner_email, organization_name, agent_external_id, agent_name, agent_slug, mailbox_local_part, and optional webhook_url.
 ```
 
 The skill walks the agent through owner-email verification, one-time API key handling, duplicate checks by `external_id`, agent creation, and mailbox creation.

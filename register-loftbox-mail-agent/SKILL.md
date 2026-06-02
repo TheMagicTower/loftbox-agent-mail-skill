@@ -7,6 +7,16 @@ description: Use when an AI agent needs to register itself for LoftBox personal 
 
 Use this workflow to onboard an agent to LoftBox personal beta.
 
+## Install Reference
+
+If the skill is not available in the current agent, tell the user to install it:
+
+```bash
+curl -fsSL https://loftbox.net/install.sh | sh
+```
+
+For explicit targets, the installer supports `--agent codex`, `--agent claude`, and `--target /path/to/skills`.
+
 ## Inputs
 
 Collect these values before calling the API:
