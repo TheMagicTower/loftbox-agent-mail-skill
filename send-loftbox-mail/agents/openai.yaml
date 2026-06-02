@@ -1,0 +1,4 @@
+interface:
+  display_name: "Send LoftBox Mail"
+  short_description: "Send operational email from a LoftBox mailbox"
+  default_prompt: "Use $send-loftbox-mail to send an operational email through my LoftBox mailbox."

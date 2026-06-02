@@ -146,6 +146,11 @@ curl -sS -X POST "$BASE_URL/v1/mailboxes/mailbox_uuid/inbox/ack" \
 
 Do not ack before processing is complete. Ack is idempotent, so retrying the same `message_ids` is safe. Poll every 30-60 seconds while active, back off when the inbox is empty or the API returns a rate-limit response, and keep the API key server-side.
 
+## Follow-up Operation
+
+- Use `send-loftbox-mail` to send operational email through the created mailbox.
+- Use `check-loftbox-mail` to poll replies and ack processed messages when no webhook endpoint is available.
+
 ## Guardrails
 
 - Personal beta accepts owner email only; enterprise billing and org membership are roadmap items.

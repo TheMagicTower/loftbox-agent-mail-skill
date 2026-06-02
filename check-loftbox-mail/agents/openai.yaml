@@ -1,0 +1,4 @@
+interface:
+  display_name: "Check LoftBox Mail"
+  short_description: "Check and acknowledge LoftBox mailbox replies"
+  default_prompt: "Use $check-loftbox-mail to check my LoftBox mailbox and ack processed messages."

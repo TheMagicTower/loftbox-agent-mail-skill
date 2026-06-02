@@ -1,14 +1,14 @@
 #!/bin/sh
 set -eu
 
-SKILL_NAME="register-loftbox-mail-agent"
+SKILL_NAMES="register-loftbox-mail-agent send-loftbox-mail check-loftbox-mail"
 ARCHIVE_URL="${LOFTBOX_SKILL_ARCHIVE_URL:-https://github.com/TheMagicTower/loftbox-agent-mail-skill/archive/refs/heads/main.tar.gz}"
 AGENT="${LOFTBOX_AGENT:-auto}"
 TARGET="${LOFTBOX_SKILLS_DIR:-${AGENT_SKILLS_DIR:-}}"
 
 usage() {
     cat <<'EOF'
-Install the LoftBox mail agent skill.
+Install the LoftBox mail agent skills.
 
 Usage:
   curl -fsSL https://loftbox.net/install.sh | sh
@@ -136,17 +136,21 @@ ARCHIVE="$TMPDIR/skill.tar.gz"
 download "$ARCHIVE_URL" "$ARCHIVE"
 tar -xzf "$ARCHIVE" -C "$TMPDIR"
 
-SRC="$TMPDIR/loftbox-agent-mail-skill-main/$SKILL_NAME"
-DEST="$TARGET/$SKILL_NAME"
+INSTALLED=""
+for skill_name in $SKILL_NAMES; do
+    SRC="$TMPDIR/loftbox-agent-mail-skill-main/$skill_name"
+    DEST="$TARGET/$skill_name"
 
-[ -f "$SRC/SKILL.md" ] || { echo "Skill archive did not contain $SKILL_NAME/SKILL.md" >&2; exit 1; }
+    [ -f "$SRC/SKILL.md" ] || { echo "Skill archive did not contain $skill_name/SKILL.md" >&2; exit 1; }
 
-mkdir -p "$DEST"
-(cd "$SRC" && tar -cf - .) | (cd "$DEST" && tar -xf -)
+    mkdir -p "$DEST"
+    (cd "$SRC" && tar -cf - .) | (cd "$DEST" && tar -xf -)
+    INSTALLED="${INSTALLED}
+  $DEST"
+done
 
 cat <<EOF
-Installed LoftBox skill:
-  $DEST
+Installed LoftBox skills:$INSTALLED
 
 Use this prompt with your agent:
   If the LoftBox mail skill is missing, install it with:
@@ -154,4 +158,5 @@ Use this prompt with your agent:
 
   Use register-loftbox-mail-agent to register this agent for LoftBox personal beta.
   Ask me only for my owner email.
+  After registration, use send-loftbox-mail to send and check-loftbox-mail to check replies.
 EOF

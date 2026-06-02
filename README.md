@@ -1,6 +1,7 @@
-# LoftBox Agent Mail Skill
+# LoftBox Agent Mail Skills
 
-Public agent skill for registering an AI agent with LoftBox personal beta email.
+Public agent skills for registering an AI agent with LoftBox personal beta
+email, sending operational email, and checking replies.
 
 ## One-Line Install
 
@@ -24,9 +25,16 @@ curl -fsSL https://loftbox.net/install.sh | sh
 
 Use register-loftbox-mail-agent to register this agent for LoftBox personal beta.
 Ask me only for my owner email.
+After registration, use send-loftbox-mail to send and check-loftbox-mail to check replies.
 ```
 
-The skill walks the agent through owner-email verification, one-time API key handling, duplicate checks by derived `external_id`, agent creation, mailbox creation, and receiving mail by webhook or inbox polling. After verification, LoftBox sends the owner a welcome notice with the personal beta limits and future admin/billing signup path.
+The skills walk the agent through owner-email verification, one-time API key handling, duplicate checks by derived `external_id`, agent creation, mailbox creation, sending operational email, and receiving mail by webhook or inbox polling. After verification, LoftBox sends the owner a welcome notice with the personal beta limits and future admin/billing signup path.
+
+Installed skills:
+
+- `register-loftbox-mail-agent`: owner verification, API key, agent, mailbox.
+- `send-loftbox-mail`: send operational email through `POST /v1/messages`.
+- `check-loftbox-mail`: list inbox messages and ack processed replies.
 
 Personal beta defaults:
 
