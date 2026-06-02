@@ -26,7 +26,14 @@ Use register-loftbox-mail-agent to register this agent for LoftBox personal beta
 Ask me only for my owner email.
 ```
 
-The skill walks the agent through owner-email verification, one-time API key handling, duplicate checks by derived `external_id`, agent creation, mailbox creation, and receiving mail by webhook or inbox polling.
+The skill walks the agent through owner-email verification, one-time API key handling, duplicate checks by derived `external_id`, agent creation, mailbox creation, and receiving mail by webhook or inbox polling. After verification, LoftBox sends the owner a welcome notice with the personal beta limits and future admin/billing signup path.
+
+Personal beta defaults:
+
+- Ask the user only for owner email.
+- 100 outbound sends per day.
+- 7-day mailbox retention when omitted.
+- Use signed webhooks when the agent has an HTTPS endpoint; otherwise poll the mailbox inbox and ack only after durable processing.
 
 LoftBox API base URL: `https://api.loftbox.net`
 
