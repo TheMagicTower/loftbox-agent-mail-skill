@@ -67,7 +67,7 @@ curl -sS -X POST "$BASE_URL/v1/auth/signup/verify" \
   -d '{"email":"owner@example.com","verification_token":"123456"}'
 ```
 
-The response returns the initial `api_key` once. Tell the user to store it in server-side secret storage. Do not print it again, write it to logs, commit it, or put it in browser/client code.
+The response returns the initial `api_key` once. Tell the user to store it in server-side secret storage. Do not print it again, write it to logs, commit it, or put it in browser/client code. LoftBox also sends the owner a welcome email with the personal beta limits and future admin/billing signup path.
 
 4. Check whether the agent already exists:
 
