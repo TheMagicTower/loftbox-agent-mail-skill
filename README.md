@@ -26,7 +26,7 @@ Use register-loftbox-mail-agent to register this agent for LoftBox personal beta
 Ask me only for my owner email.
 ```
 
-The skill walks the agent through owner-email verification, one-time API key handling, duplicate checks by derived `external_id`, agent creation, and mailbox creation.
+The skill walks the agent through owner-email verification, one-time API key handling, duplicate checks by derived `external_id`, agent creation, mailbox creation, and receiving mail by webhook or inbox polling.
 
 LoftBox API base URL: `https://api.loftbox.net`
 

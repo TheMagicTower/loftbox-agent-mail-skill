@@ -32,7 +32,7 @@ Derive these values without asking the user, unless derivation is impossible or 
 - `agent_slug`: derive from `agent_name`.
 - `mailbox_local_part`: derive from `agent_slug`.
 - `domain_id`: omit for the personal beta default-domain path unless the user explicitly provides a verified domain.
-- `webhook_url`: omit unless the current agent has an HTTPS inbound webhook.
+- `webhook_url`: only use when the current agent has an HTTPS inbound webhook endpoint.
 - `base_url`: default to `https://api.loftbox.net`.
 
 `agent_external_id` must use lowercase letters, numbers, `_`, `.`, `:`, or `-`, up to 128 characters. Example: `hermes:support-agent`.
@@ -106,12 +106,45 @@ curl -sS -X POST "$BASE_URL/v1/agents/agent_uuid/mailboxes" \
   -d '{
     "local_part": "support-agent",
     "display_name": "Support Agent",
-    "webhook_url": "https://example.com/webhooks/loftbox",
     "retention_days": 7
   }'
 ```
 
-Omit `webhook_url` when the current agent does not have an inbound HTTPS endpoint. Custom domains are not required for personal beta registration; only use `domain_id` when the user explicitly supplies a verified domain.
+Custom domains are not required for personal beta registration; only use `domain_id` when the user explicitly supplies a verified domain.
+
+7. Choose the receive path.
+
+If the current agent has an HTTPS webhook endpoint, register it as an agent webhook:
+
+```bash
+curl -sS -X POST "$BASE_URL/v1/agents/agent_uuid/webhooks" \
+  -H "Authorization: Bearer $LOFTBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/webhooks/loftbox",
+    "event_types": ["message.inbound", "thread.created"]
+  }'
+```
+
+The webhook secret is returned once. Store it in server-side secret storage and verify `X-LoftBox-Signature` before trusting any webhook body.
+
+If the current agent does not have a webhook endpoint, use inbox polling:
+
+```bash
+curl -sS "$BASE_URL/v1/mailboxes/mailbox_uuid/inbox?limit=20" \
+  -H "Authorization: Bearer $LOFTBOX_API_KEY"
+```
+
+Process each returned message exactly once. After processing has been durably recorded by the agent, acknowledge the message:
+
+```bash
+curl -sS -X POST "$BASE_URL/v1/mailboxes/mailbox_uuid/inbox/ack" \
+  -H "Authorization: Bearer $LOFTBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message_ids":["message_uuid_or_msg_public_id"]}'
+```
+
+Do not ack before processing is complete. Ack is idempotent, so retrying the same `message_ids` is safe. Poll every 30-60 seconds while active, back off when the inbox is empty or the API returns a rate-limit response, and keep the API key server-side.
 
 ## Guardrails
 
