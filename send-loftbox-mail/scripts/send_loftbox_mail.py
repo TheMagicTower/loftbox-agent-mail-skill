@@ -6,6 +6,10 @@ import sys
 import urllib.error
 import urllib.request
 
+# Identify the client so upstream WAF/CDN rules do not block the default
+# urllib User-Agent ("Python-urllib/x.y"), which Cloudflare flags as a bot.
+USER_AGENT = os.environ.get("LOFTBOX_USER_AGENT", "loftbox-mail-skill/1.0 (+https://loftbox.net)")
+
 
 def env(name, default=None):
     value = os.environ.get(name, default)
@@ -58,6 +62,7 @@ def main():
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
         },
         method="POST",
     )
