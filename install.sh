@@ -9,6 +9,8 @@ VERSION_FILE=".loftbox-skill-version"
 ALLOW_UNTRUSTED_ARCHIVE="${LOFTBOX_ALLOW_UNTRUSTED_ARCHIVE:-0}"
 AGENT="${LOFTBOX_AGENT:-auto}"
 TARGET="${LOFTBOX_SKILLS_DIR:-${AGENT_SKILLS_DIR:-}}"
+BIN_DIR="${LOFTBOX_BIN_DIR:-${AGENT_BIN_DIR:-}}"
+INSTALL_BIN="${LOFTBOX_INSTALL_BIN:-1}"
 MODE="install"
 
 usage() {
@@ -19,12 +21,15 @@ Usage:
   curl -fsSL https://loftbox.net/install.sh | sh
   curl -fsSL https://loftbox.net/install.sh | sh -s -- --agent claude
   curl -fsSL https://loftbox.net/install.sh | sh -s -- --target "$HOME/.my-agent/skills"
+  curl -fsSL https://loftbox.net/install.sh | sh -s -- --bin-dir "$HOME/.local/bin"
   curl -fsSL https://loftbox.net/install.sh | sh -s -- --check
   curl -fsSL https://loftbox.net/install.sh | sh -s -- --update
 
 Options:
   --agent auto|codex|claude|opencode|cursor|windsurf|aider|openclaw|generic
   --target DIR   Install into an explicit skills directory.
+  --bin-dir DIR  Install send/check command shims into DIR.
+  --no-bin       Do not install command shims.
   --check        Check whether a newer LoftBox skill bundle is available.
   --update       Install the latest published LoftBox skill bundle.
 EOF
@@ -41,6 +46,16 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || { echo "Missing value for --target" >&2; exit 2; }
             TARGET="$2"
             shift 2
+            ;;
+        --bin-dir)
+            [ "$#" -ge 2 ] || { echo "Missing value for --bin-dir" >&2; exit 2; }
+            BIN_DIR="$2"
+            INSTALL_BIN="1"
+            shift 2
+            ;;
+        --no-bin)
+            INSTALL_BIN="0"
+            shift
             ;;
         --check)
             MODE="check"
@@ -121,6 +136,16 @@ skills_dir_for_agent() {
             exit 2
             ;;
     esac
+}
+
+default_bin_dir() {
+    printf '%s\n' "${HOME:-.}/.local/bin"
+}
+
+shell_quote() {
+    printf "'"
+    printf '%s' "$1" | sed "s/'/'\\\\''/g"
+    printf "'"
 }
 
 download() {
@@ -283,10 +308,49 @@ cat > "$TARGET/$VERSION_FILE" <<EOF
 }
 EOF
 
+INSTALLED_BIN=""
+if [ "$INSTALL_BIN" = "1" ]; then
+    if [ -z "$BIN_DIR" ]; then
+        BIN_DIR="$(default_bin_dir)"
+    fi
+    mkdir -p "$BIN_DIR"
+
+    SEND_SKILL_DIR="$(shell_quote "$TARGET/send-loftbox-mail")"
+    CHECK_SKILL_DIR="$(shell_quote "$TARGET/check-loftbox-mail")"
+
+    cat > "$BIN_DIR/send-loftbox-mail" <<EOF
+#!/bin/sh
+set -eu
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required for send-loftbox-mail." >&2; exit 127; }
+SKILL_DIR=$SEND_SKILL_DIR
+export SKILL_DIR
+exec python3 "\$SKILL_DIR/scripts/send_loftbox_mail.py" "\$@"
+EOF
+    chmod 755 "$BIN_DIR/send-loftbox-mail"
+
+    cat > "$BIN_DIR/check-loftbox-mail" <<EOF
+#!/bin/sh
+set -eu
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required for check-loftbox-mail." >&2; exit 127; }
+SKILL_DIR=$CHECK_SKILL_DIR
+export SKILL_DIR
+exec python3 "\$SKILL_DIR/scripts/check_loftbox_mail.py" "\$@"
+EOF
+    chmod 755 "$BIN_DIR/check-loftbox-mail"
+
+    INSTALLED_BIN="
+  $BIN_DIR/send-loftbox-mail
+  $BIN_DIR/check-loftbox-mail"
+fi
+
 cat <<EOF
 Installed LoftBox skills:$INSTALLED
+Installed LoftBox commands:$INSTALLED_BIN
 Version: ${REMOTE_VERSION:-unknown}
 Commit: ${REMOTE_COMMIT:-unknown}
+
+If the commands are not on PATH, add:
+  export PATH="$BIN_DIR:\$PATH"
 
 Use this prompt with your agent:
   If the LoftBox mail skill is missing, install it with:

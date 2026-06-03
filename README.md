@@ -15,6 +15,15 @@ The installer auto-detects common local agent skill directories. Use an explicit
 curl -fsSL https://loftbox.net/install.sh | sh -s -- --agent codex
 curl -fsSL https://loftbox.net/install.sh | sh -s -- --agent claude
 curl -fsSL https://loftbox.net/install.sh | sh -s -- --target "$HOME/.my-agent/skills"
+curl -fsSL https://loftbox.net/install.sh | sh -s -- --bin-dir "$HOME/.local/bin"
+```
+
+The installer also creates command shims for `send-loftbox-mail` and
+`check-loftbox-mail`. If they are not visible, make sure the bin directory is on
+`PATH`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Check for updates without installing:
@@ -47,6 +56,11 @@ Installed skills:
 - `register-loftbox-mail-agent`: owner verification, API key, agent, mailbox.
 - `send-loftbox-mail`: send operational email through `POST /v1/messages`.
 - `check-loftbox-mail`: safely triage untrusted inbound mail, list inbox messages, and ack processed replies.
+
+Installed commands:
+
+- `send-loftbox-mail`
+- `check-loftbox-mail`
 
 Personal beta defaults:
 
