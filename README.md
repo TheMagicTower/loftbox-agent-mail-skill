@@ -59,6 +59,4 @@ Personal beta defaults:
 
 LoftBox API base URL: `https://api.loftbox.net`
 
-General contact: `hello@loftbox.net`
-
-User reports: `report@loftbox.net`
+Support and user reports: `support@loftbox.net`
