@@ -2,9 +2,14 @@
 set -eu
 
 SKILL_NAMES="register-loftbox-mail-agent send-loftbox-mail check-loftbox-mail"
-ARCHIVE_URL="${LOFTBOX_SKILL_ARCHIVE_URL:-https://github.com/TheMagicTower/loftbox-agent-mail-skill/archive/refs/heads/main.tar.gz}"
+DEFAULT_ARCHIVE_URL="https://github.com/TheMagicTower/loftbox-agent-mail-skill/archive/refs/heads/main.tar.gz"
+ARCHIVE_URL="${LOFTBOX_SKILL_ARCHIVE_URL:-}"
+VERSION_URL="${LOFTBOX_SKILL_VERSION_URL:-https://loftbox.net/skill-version.json}"
+VERSION_FILE=".loftbox-skill-version"
+ALLOW_UNTRUSTED_ARCHIVE="${LOFTBOX_ALLOW_UNTRUSTED_ARCHIVE:-0}"
 AGENT="${LOFTBOX_AGENT:-auto}"
 TARGET="${LOFTBOX_SKILLS_DIR:-${AGENT_SKILLS_DIR:-}}"
+MODE="install"
 
 usage() {
     cat <<'EOF'
@@ -14,10 +19,14 @@ Usage:
   curl -fsSL https://loftbox.net/install.sh | sh
   curl -fsSL https://loftbox.net/install.sh | sh -s -- --agent claude
   curl -fsSL https://loftbox.net/install.sh | sh -s -- --target "$HOME/.my-agent/skills"
+  curl -fsSL https://loftbox.net/install.sh | sh -s -- --check
+  curl -fsSL https://loftbox.net/install.sh | sh -s -- --update
 
 Options:
   --agent auto|codex|claude|opencode|cursor|windsurf|aider|openclaw|generic
   --target DIR   Install into an explicit skills directory.
+  --check        Check whether a newer LoftBox skill bundle is available.
+  --update       Install the latest published LoftBox skill bundle.
 EOF
 }
 
@@ -32,6 +41,14 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || { echo "Missing value for --target" >&2; exit 2; }
             TARGET="$2"
             shift 2
+            ;;
+        --check)
+            MODE="check"
+            shift
+            ;;
+        --update)
+            MODE="update"
+            shift
             ;;
         -h|--help)
             usage
@@ -119,7 +136,48 @@ download() {
     fi
 }
 
-command -v tar >/dev/null 2>&1 || { echo "tar is required." >&2; exit 1; }
+json_value() {
+    key="$1"
+    file="$2"
+    sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$file" | head -n 1
+}
+
+read_installed_field() {
+    key="$1"
+    file="$TARGET/$VERSION_FILE"
+    if [ -f "$file" ]; then
+        json_value "$key" "$file"
+    fi
+}
+
+is_trusted_archive_url() {
+    case "$1" in
+        https://github.com/TheMagicTower/loftbox-agent-mail-skill/archive/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+require_trusted_archive_url() {
+    url="$1"
+    source="$2"
+    if is_trusted_archive_url "$url"; then
+        return 0
+    fi
+    if [ "$source" = "override" ] && [ "$ALLOW_UNTRUSTED_ARCHIVE" = "1" ]; then
+        echo "Warning: using untrusted LoftBox skill archive URL from LOFTBOX_SKILL_ARCHIVE_URL." >&2
+        return 0
+    fi
+    echo "Untrusted LoftBox skill archive URL from $source: $url" >&2
+    echo "Expected https://github.com/TheMagicTower/loftbox-agent-mail-skill/archive/..." >&2
+    if [ "$source" = "override" ]; then
+        echo "For local tests only, set LOFTBOX_ALLOW_UNTRUSTED_ARCHIVE=1." >&2
+    fi
+    exit 1
+}
 
 AGENT="$(detect_agent)"
 if [ -z "$TARGET" ]; then
@@ -132,25 +190,103 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+REMOTE_VERSION_FILE="$TMPDIR/skill-version.json"
+REMOTE_VERSION=""
+REMOTE_COMMIT=""
+REMOTE_ARCHIVE_URL=""
+if download "$VERSION_URL" "$REMOTE_VERSION_FILE" 2>/dev/null; then
+    REMOTE_VERSION="$(json_value version "$REMOTE_VERSION_FILE")"
+    REMOTE_COMMIT="$(json_value commit "$REMOTE_VERSION_FILE")"
+    REMOTE_ARCHIVE_URL="$(json_value archive_url "$REMOTE_VERSION_FILE")"
+fi
+
+if [ "$MODE" = "check" ]; then
+    INSTALLED_VERSION="$(read_installed_field version || true)"
+    INSTALLED_COMMIT="$(read_installed_field commit || true)"
+
+    if [ -z "$REMOTE_VERSION" ] && [ -z "$REMOTE_COMMIT" ]; then
+        echo "Could not fetch LoftBox skill version metadata from $VERSION_URL." >&2
+        exit 1
+    fi
+    if [ -z "$REMOTE_ARCHIVE_URL" ]; then
+        echo "LoftBox skill version metadata did not include archive_url." >&2
+        exit 1
+    fi
+    require_trusted_archive_url "$REMOTE_ARCHIVE_URL" "version metadata"
+
+    echo "LoftBox skill bundle update check"
+    echo "  installed version: ${INSTALLED_VERSION:-unknown}"
+    echo "  installed commit:  ${INSTALLED_COMMIT:-unknown}"
+    echo "  latest version:    ${REMOTE_VERSION:-unknown}"
+    echo "  latest commit:     ${REMOTE_COMMIT:-unknown}"
+
+    if [ -n "$INSTALLED_COMMIT" ] && [ -n "$REMOTE_COMMIT" ]; then
+        if [ "$INSTALLED_COMMIT" = "$REMOTE_COMMIT" ]; then
+            echo "Status: up to date"
+        else
+            echo "Status: update available"
+            echo "Run after operator approval:"
+            echo "  curl -fsSL https://loftbox.net/install.sh | sh -s -- --update"
+        fi
+    elif [ -n "$INSTALLED_VERSION" ] && [ -n "$REMOTE_VERSION" ] && [ "$INSTALLED_VERSION" = "$REMOTE_VERSION" ]; then
+        echo "Status: up to date"
+    else
+        echo "Status: update available"
+        echo "Run after operator approval:"
+        echo "  curl -fsSL https://loftbox.net/install.sh | sh -s -- --update"
+    fi
+    exit 0
+fi
+
+command -v tar >/dev/null 2>&1 || { echo "tar is required." >&2; exit 1; }
+
+if [ -z "$ARCHIVE_URL" ]; then
+    if [ "$MODE" = "update" ] && { [ -z "$REMOTE_COMMIT" ] || [ -z "$REMOTE_ARCHIVE_URL" ]; }; then
+        echo "Could not fetch valid LoftBox skill update metadata from $VERSION_URL." >&2
+        exit 1
+    fi
+    ARCHIVE_URL="${REMOTE_ARCHIVE_URL:-$DEFAULT_ARCHIVE_URL}"
+    require_trusted_archive_url "$ARCHIVE_URL" "version metadata"
+else
+    require_trusted_archive_url "$ARCHIVE_URL" "override"
+fi
+
 ARCHIVE="$TMPDIR/skill.tar.gz"
 download "$ARCHIVE_URL" "$ARCHIVE"
 tar -xzf "$ARCHIVE" -C "$TMPDIR"
 
+FIRST_SKILL="$(printf '%s\n' $SKILL_NAMES | head -n 1)"
+ARCHIVE_ROOT="$(find "$TMPDIR" -type f -path "*/$FIRST_SKILL/SKILL.md" | sed "s#/$FIRST_SKILL/SKILL.md##" | head -n 1)"
+[ -n "$ARCHIVE_ROOT" ] || { echo "Skill archive did not contain $FIRST_SKILL/SKILL.md" >&2; exit 1; }
+
 INSTALLED=""
 for skill_name in $SKILL_NAMES; do
-    SRC="$TMPDIR/loftbox-agent-mail-skill-main/$skill_name"
+    SRC="$ARCHIVE_ROOT/$skill_name"
     DEST="$TARGET/$skill_name"
 
     [ -f "$SRC/SKILL.md" ] || { echo "Skill archive did not contain $skill_name/SKILL.md" >&2; exit 1; }
 
+    rm -rf "$DEST"
     mkdir -p "$DEST"
     (cd "$SRC" && tar -cf - .) | (cd "$DEST" && tar -xf -)
     INSTALLED="${INSTALLED}
   $DEST"
 done
 
+mkdir -p "$TARGET"
+cat > "$TARGET/$VERSION_FILE" <<EOF
+{
+  "version": "${REMOTE_VERSION:-unknown}",
+  "commit": "${REMOTE_COMMIT:-unknown}",
+  "archive_url": "$ARCHIVE_URL",
+  "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf unknown)"
+}
+EOF
+
 cat <<EOF
 Installed LoftBox skills:$INSTALLED
+Version: ${REMOTE_VERSION:-unknown}
+Commit: ${REMOTE_COMMIT:-unknown}
 
 Use this prompt with your agent:
   If the LoftBox mail skill is missing, install it with:
