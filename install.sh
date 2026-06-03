@@ -6,6 +6,7 @@ DEFAULT_ARCHIVE_URL="https://github.com/TheMagicTower/loftbox-agent-mail-skill/a
 ARCHIVE_URL="${LOFTBOX_SKILL_ARCHIVE_URL:-}"
 VERSION_URL="${LOFTBOX_SKILL_VERSION_URL:-https://loftbox.net/skill-version.json}"
 VERSION_FILE=".loftbox-skill-version"
+ALLOW_UNTRUSTED_ARCHIVE="${LOFTBOX_ALLOW_UNTRUSTED_ARCHIVE:-0}"
 AGENT="${LOFTBOX_AGENT:-auto}"
 TARGET="${LOFTBOX_SKILLS_DIR:-${AGENT_SKILLS_DIR:-}}"
 MODE="install"
@@ -160,6 +161,24 @@ is_trusted_archive_url() {
     esac
 }
 
+require_trusted_archive_url() {
+    url="$1"
+    source="$2"
+    if is_trusted_archive_url "$url"; then
+        return 0
+    fi
+    if [ "$source" = "override" ] && [ "$ALLOW_UNTRUSTED_ARCHIVE" = "1" ]; then
+        echo "Warning: using untrusted LoftBox skill archive URL from LOFTBOX_SKILL_ARCHIVE_URL." >&2
+        return 0
+    fi
+    echo "Untrusted LoftBox skill archive URL from $source: $url" >&2
+    echo "Expected https://github.com/TheMagicTower/loftbox-agent-mail-skill/archive/..." >&2
+    if [ "$source" = "override" ]; then
+        echo "For local tests only, set LOFTBOX_ALLOW_UNTRUSTED_ARCHIVE=1." >&2
+    fi
+    exit 1
+}
+
 AGENT="$(detect_agent)"
 if [ -z "$TARGET" ]; then
     TARGET="$(skills_dir_for_agent "$AGENT")"
@@ -189,6 +208,11 @@ if [ "$MODE" = "check" ]; then
         echo "Could not fetch LoftBox skill version metadata from $VERSION_URL." >&2
         exit 1
     fi
+    if [ -z "$REMOTE_ARCHIVE_URL" ]; then
+        echo "LoftBox skill version metadata did not include archive_url." >&2
+        exit 1
+    fi
+    require_trusted_archive_url "$REMOTE_ARCHIVE_URL" "version metadata"
 
     echo "LoftBox skill bundle update check"
     echo "  installed version: ${INSTALLED_VERSION:-unknown}"
@@ -196,8 +220,14 @@ if [ "$MODE" = "check" ]; then
     echo "  latest version:    ${REMOTE_VERSION:-unknown}"
     echo "  latest commit:     ${REMOTE_COMMIT:-unknown}"
 
-    if [ -n "$INSTALLED_COMMIT" ] && [ -n "$REMOTE_COMMIT" ] && [ "$INSTALLED_COMMIT" = "$REMOTE_COMMIT" ]; then
-        echo "Status: up to date"
+    if [ -n "$INSTALLED_COMMIT" ] && [ -n "$REMOTE_COMMIT" ]; then
+        if [ "$INSTALLED_COMMIT" = "$REMOTE_COMMIT" ]; then
+            echo "Status: up to date"
+        else
+            echo "Status: update available"
+            echo "Run after operator approval:"
+            echo "  curl -fsSL https://loftbox.net/install.sh | sh -s -- --update"
+        fi
     elif [ -n "$INSTALLED_VERSION" ] && [ -n "$REMOTE_VERSION" ] && [ "$INSTALLED_VERSION" = "$REMOTE_VERSION" ]; then
         echo "Status: up to date"
     else
@@ -211,12 +241,14 @@ fi
 command -v tar >/dev/null 2>&1 || { echo "tar is required." >&2; exit 1; }
 
 if [ -z "$ARCHIVE_URL" ]; then
-    ARCHIVE_URL="${REMOTE_ARCHIVE_URL:-$DEFAULT_ARCHIVE_URL}"
-    if ! is_trusted_archive_url "$ARCHIVE_URL"; then
-        echo "Untrusted LoftBox skill archive URL in version metadata: $ARCHIVE_URL" >&2
-        echo "Expected https://github.com/TheMagicTower/loftbox-agent-mail-skill/archive/..." >&2
+    if [ "$MODE" = "update" ] && { [ -z "$REMOTE_COMMIT" ] || [ -z "$REMOTE_ARCHIVE_URL" ]; }; then
+        echo "Could not fetch valid LoftBox skill update metadata from $VERSION_URL." >&2
         exit 1
     fi
+    ARCHIVE_URL="${REMOTE_ARCHIVE_URL:-$DEFAULT_ARCHIVE_URL}"
+    require_trusted_archive_url "$ARCHIVE_URL" "version metadata"
+else
+    require_trusted_archive_url "$ARCHIVE_URL" "override"
 fi
 
 ARCHIVE="$TMPDIR/skill.tar.gz"
@@ -234,6 +266,7 @@ for skill_name in $SKILL_NAMES; do
 
     [ -f "$SRC/SKILL.md" ] || { echo "Skill archive did not contain $skill_name/SKILL.md" >&2; exit 1; }
 
+    rm -rf "$DEST"
     mkdir -p "$DEST"
     (cd "$SRC" && tar -cf - .) | (cd "$DEST" && tar -xf -)
     INSTALLED="${INSTALLED}
