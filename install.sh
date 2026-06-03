@@ -149,6 +149,17 @@ read_installed_field() {
     fi
 }
 
+is_trusted_archive_url() {
+    case "$1" in
+        https://github.com/TheMagicTower/loftbox-agent-mail-skill/archive/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 AGENT="$(detect_agent)"
 if [ -z "$TARGET" ]; then
     TARGET="$(skills_dir_for_agent "$AGENT")"
@@ -201,6 +212,11 @@ command -v tar >/dev/null 2>&1 || { echo "tar is required." >&2; exit 1; }
 
 if [ -z "$ARCHIVE_URL" ]; then
     ARCHIVE_URL="${REMOTE_ARCHIVE_URL:-$DEFAULT_ARCHIVE_URL}"
+    if ! is_trusted_archive_url "$ARCHIVE_URL"; then
+        echo "Untrusted LoftBox skill archive URL in version metadata: $ARCHIVE_URL" >&2
+        echo "Expected https://github.com/TheMagicTower/loftbox-agent-mail-skill/archive/..." >&2
+        exit 1
+    fi
 fi
 
 ARCHIVE="$TMPDIR/skill.tar.gz"
