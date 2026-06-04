@@ -24,9 +24,21 @@ USER_AGENT = os.environ.get(
 )
 
 
+def _env(name, default=None):
+    value = os.environ.get(name, default)
+    if value is None or value == "":
+        raise SystemExit(f"{name} is required")
+    return value
+
+
+def _normalize_domain(raw):
+    # 서버 normalize_domain 과 동일: trim, 끝 점 제거, 소문자.
+    return raw.strip().rstrip(".").lower()
+
+
 def _req(method, path, body=None):
     base = os.environ.get("LOFTBOX_BASE_URL", "https://api.loftbox.net").rstrip("/")
-    key = os.environ["LOFTBOX_API_KEY"]
+    key = _env("LOFTBOX_API_KEY")
     data = json.dumps(body).encode("utf-8") if body is not None else None
     headers = {"Authorization": f"Bearer {key}", "User-Agent": USER_AGENT}
     if data is not None:
@@ -48,16 +60,22 @@ def _print_or_exit(code, body):
 
 
 def add(domain):
+    domain = _normalize_domain(domain)
     code, body = _req("POST", "/v1/domains", {"domain": domain})
     if code in (200, 201):
         print(body)
         return
     if code == 409:
         # 자기 org 목록에서 status != 'deleted' 인 동일 도메인만 resolve.
+        # 도메인은 대소문자 무시 — 양쪽 정규화 후 비교(서버는 소문자 정규화).
         c2, b2 = _req("GET", "/v1/domains")
-        rows = json.loads(b2).get("data", []) if c2 == 200 else []
-        active = [r for r in rows if r.get("domain") == domain and r.get("status") != "deleted"]
-        deleted = [r for r in rows if r.get("domain") == domain and r.get("status") == "deleted"]
+        try:
+            rows = json.loads(b2).get("data", []) if c2 == 200 else []
+        except (ValueError, AttributeError):
+            rows = []
+        same = [r for r in rows if _normalize_domain(str(r.get("domain", ""))) == domain]
+        active = [r for r in same if r.get("status") != "deleted"]
+        deleted = [r for r in same if r.get("status") == "deleted"]
         if active:
             print(json.dumps(active[0]))
             return

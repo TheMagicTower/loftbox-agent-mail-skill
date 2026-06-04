@@ -28,8 +28,8 @@ records to set → poll status → verify**.
 ## Commands
 
 ```bash
-SKILL_DIR="$(dirname "$0")/.."   # or the installed skill path
-PY="$SKILL_DIR/setup-loftbox-domain/scripts/setup_loftbox_domain.py"
+# $SKILL_DIR is this skill's own directory (…/setup-loftbox-domain).
+PY="$SKILL_DIR/scripts/setup_loftbox_domain.py"
 
 # 1) Add the domain (returns the domain object incl. its id / dom_ public id)
 python3 "$PY" add acme.com
