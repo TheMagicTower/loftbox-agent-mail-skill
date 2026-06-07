@@ -255,20 +255,39 @@ def _apply_route53(records, domain, zone_id, dry_run, overwrite):
             )
             continue
 
-        existing = _route53_existing_value(client, zone_id, rrset["Name"], rrset["Type"])
-        if existing is not None:
-            if existing == desired_value:
-                results.append((rec, "skipped", "이미 동일한 값"))
+        # 기존 RRSet 의 전체 값 목록을 가져온다(name+type 당 route53 RRSet 은 1개).
+        existing_values = _route53_existing_values(client, zone_id, rrset["Name"], rrset["Type"])
+
+        if rrset["Type"] in ("TXT", "MX"):
+            # 멀티값 타입: route53 UPSERT 는 RRSet 전체를 교체하므로, LoftBox 값만
+            # 넣으면 고객의 다른 TXT(SPF/DKIM 등)/MX 가 삭제된다. 따라서 항상 기존
+            # 값을 보존하고 우리 값을 ADD 한다(merge). --overwrite 는 멀티값 타입에서
+            # "다른 레코드 삭제"를 의미하지 않는다 — 무관한 값을 절대 지우지 않는다.
+            if desired_value in existing_values:
+                results.append((rec, "skipped", "이미 동일한 값(set에 존재)"))
                 continue
-            if not overwrite:
-                results.append((rec, "conflict", f"기존 값과 다름(--overwrite 없이 건너뜀): {existing}"))
-                continue
+            merged = existing_values + [desired_value]
+            rrset["ResourceRecords"] = [{"Value": v} for v in merged]
+            detail = f"UPSERT {rrset['Type']} {rrset['Name']} (merge, {len(merged)}개 값)"
+        else:
+            # 단일값 타입(CNAME): name 당 값 1개. 다르면 overwrite 여부에 따라 교체/건너뜀.
+            if existing_values:
+                if desired_value in existing_values:
+                    results.append((rec, "skipped", "이미 동일한 값"))
+                    continue
+                if not overwrite:
+                    results.append(
+                        (rec, "conflict", f"기존 값과 다름(--overwrite 없이 건너뜀): {existing_values[0]}")
+                    )
+                    continue
+            detail = f"UPSERT {rrset['Type']} {rrset['Name']}"
+
         try:
             client.change_resource_record_sets(
                 HostedZoneId=zone_id,
                 ChangeBatch={"Changes": [change]},
             )
-            results.append((rec, "applied", f"UPSERT {rrset['Type']} {rrset['Name']}"))
+            results.append((rec, "applied", detail))
         except Exception as exc:  # noqa: BLE001 - provider 오류는 레코드 단위 보고
             results.append((rec, "error", str(exc)))
     return results
@@ -316,7 +335,13 @@ def _resolve_route53_zone(client, domain):
     return None, None
 
 
-def _route53_existing_value(client, zone_id, name, rtype):
+def _route53_existing_values(client, zone_id, name, rtype):
+    """name+type 에 해당하는 기존 RRSet 의 전체 Value 목록을 반환한다.
+
+    route53 는 같은 name+type 을 단일 RRSet(여러 ResourceRecords)로 저장하므로
+    멀티값(TXT/MX)을 보존하려면 전체 목록이 필요하다. RRSet 이 없으면 [] 반환.
+    StartRecordName/Type 으로 조회 후 정확히 name+type 인 RRSet 만 매칭한다.
+    """
     try:
         resp = client.list_resource_record_sets(
             HostedZoneId=zone_id,
@@ -325,13 +350,11 @@ def _route53_existing_value(client, zone_id, name, rtype):
             MaxItems="1",
         )
     except Exception:  # noqa: BLE001
-        return None
+        return []
     for rrset in resp.get("ResourceRecordSets", []):
         if rrset.get("Name") == name and rrset.get("Type") == rtype:
-            values = [r.get("Value") for r in rrset.get("ResourceRecords", [])]
-            if values:
-                return values[0]
-    return None
+            return [r.get("Value") for r in rrset.get("ResourceRecords", []) if r.get("Value") is not None]
+    return []
 
 
 # --- cloudflare -------------------------------------------------------------
@@ -397,12 +420,17 @@ def _resolve_cloudflare_zone(token, domain):
     return None
 
 
-def _cf_existing_record(token, zone_id, rtype, name):
+def _cf_existing_records(token, zone_id, rtype, name):
+    """name+type 에 매칭되는 cloudflare 레코드 전체 목록을 반환한다.
+
+    cloudflare 는 각 TXT/MX 를 별개 레코드로 저장하므로(첫 번째만 보면 무관한
+    레코드를 오인/변형할 수 있음) 매칭 전체를 가져온다. 없으면 [] 반환.
+    """
     q = urllib.parse.urlencode({"type": rtype, "name": name})
     code, payload = _cf_req("GET", f"/zones/{zone_id}/dns_records?{q}", token)
-    if code == 200 and payload.get("result"):
-        return payload["result"][0]
-    return None
+    if code == 200 and isinstance(payload.get("result"), list):
+        return payload["result"]
+    return []
 
 
 def _cf_same(existing, payload):
@@ -440,24 +468,41 @@ def _apply_cloudflare(records, domain, zone_id, dry_run, overwrite):
         if payload.get("priority") is not None:
             desc += f" (priority {payload['priority']})"
 
-        existing = _cf_existing_record(token, zone_id, payload["type"], payload["name"])
-        if existing is not None:
-            if _cf_same(existing, payload):
-                results.append((rec, "skipped", "이미 동일한 값"))
+        existing = _cf_existing_records(token, zone_id, payload["type"], payload["name"])
+
+        if payload["type"] in ("TXT", "MX"):
+            # 멀티값 타입: cloudflare 는 각 값을 별개 레코드로 저장한다. 우리 값과
+            # 동일한 레코드가 이미 있으면 skip, 없으면 새 레코드를 POST 로 ADD 한다.
+            # 무관한 기존 레코드(고객 SPF/DKIM/백업 MX 등)는 절대 PUT 으로 변형하지
+            # 않는다. --overwrite 는 멀티값 추가에서 무의미하다(우리는 add 만 한다).
+            if any(_cf_same(e, payload) for e in existing):
+                results.append((rec, "skipped", "이미 동일한 값(레코드 존재)"))
                 continue
-            if not overwrite:
-                results.append(
-                    (rec, "conflict", f"기존 값과 다름(--overwrite 없이 건너뜀): {existing.get('content')}")
-                )
-                continue
-            code, resp = _cf_req(
-                "PUT", f"/zones/{zone_id}/dns_records/{existing['id']}", token, payload
-            )
-        else:
             code, resp = _cf_req("POST", f"/zones/{zone_id}/dns_records", token, payload)
+            applied_detail = desc + " (created)"
+        else:
+            # 단일값 타입(CNAME): name 당 유효 레코드 1개. 동일하면 skip, 다르면
+            # overwrite 여부에 따라 그 레코드를 PUT 으로 교체하거나 건너뛴다.
+            match = existing[0] if existing else None
+            if match is not None:
+                if _cf_same(match, payload):
+                    results.append((rec, "skipped", "이미 동일한 값"))
+                    continue
+                if not overwrite:
+                    results.append(
+                        (rec, "conflict", f"기존 값과 다름(--overwrite 없이 건너뜀): {match.get('content')}")
+                    )
+                    continue
+                code, resp = _cf_req(
+                    "PUT", f"/zones/{zone_id}/dns_records/{match['id']}", token, payload
+                )
+                applied_detail = desc
+            else:
+                code, resp = _cf_req("POST", f"/zones/{zone_id}/dns_records", token, payload)
+                applied_detail = desc
 
         if code in (200, 201) and resp.get("success", True):
-            results.append((rec, "applied", desc))
+            results.append((rec, "applied", applied_detail))
         else:
             errors = resp.get("errors") if isinstance(resp, dict) else None
             results.append((rec, "error", f"HTTP {code}: {errors}"))

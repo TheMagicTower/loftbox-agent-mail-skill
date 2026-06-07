@@ -193,6 +193,297 @@ def test_is_dns_suffix_guard():
     assert not m._is_dns_suffix("me.com.", "acme.com.")
 
 
+# ---------------------------------------------------------------------------
+# Fix 1 (route53): 멀티값 RRSet 보존/merge — 고객 TXT/MX 를 절대 삭제하지 않음.
+# ---------------------------------------------------------------------------
+
+
+class _FakeRoute53ApplyClient:
+    """change_resource_record_sets 와 list_resource_record_sets 를 흉내내는 클라이언트.
+
+    rrsets: {(name, type): [values]} — 기존 RRSet 상태.
+    change_resource_record_sets 호출은 self.changes 에 기록한다(쓰기 검증용).
+    """
+
+    def __init__(self, rrsets=None):
+        # {(name, type): [Value, ...]}
+        self.rrsets = dict(rrsets or {})
+        self.changes = []
+
+    def list_resource_record_sets(self, HostedZoneId=None, StartRecordName=None,
+                                  StartRecordType=None, MaxItems=None):
+        values = self.rrsets.get((StartRecordName, StartRecordType))
+        if values is None:
+            return {"ResourceRecordSets": []}
+        return {"ResourceRecordSets": [{
+            "Name": StartRecordName,
+            "Type": StartRecordType,
+            "ResourceRecords": [{"Value": v} for v in values],
+        }]}
+
+    def change_resource_record_sets(self, HostedZoneId=None, ChangeBatch=None):
+        self.changes.append(ChangeBatch)
+        return {"ChangeInfo": {"Id": "/change/C1", "Status": "PENDING"}}
+
+
+def _upserted_values(client):
+    """기록된 change 들 중 마지막 UPSERT 의 Value 목록을 반환."""
+    last = client.changes[-1]["Changes"][0]
+    return [r["Value"] for r in last["ResourceRecordSet"]["ResourceRecords"]]
+
+
+def _run_route53_with_client(client, records, domain="acme.com",
+                             zone_id="/hostedzone/Z0", overwrite=False):
+    """가짜 route53 client 를 boto3.client 로 주입해 _apply_route53 실행."""
+    import sys as _sys
+    import types as _types
+    backup = _sys.modules.get("boto3")
+    _sys.modules["boto3"] = _types.SimpleNamespace(client=lambda *_a, **_k: client)
+    try:
+        return m._apply_route53(records, domain, zone_id, dry_run=False,
+                                overwrite=overwrite)
+    finally:
+        if backup is not None:
+            _sys.modules["boto3"] = backup
+        else:
+            _sys.modules.pop("boto3", None)
+
+
+def test_route53_txt_merge_preserves_existing():
+    # apex 에 고객의 기존 SPF TXT 가 있고, LoftBox TXT 를 추가 → UPSERT 에 둘 다 포함.
+    client = _FakeRoute53ApplyClient(
+        {("acme.com.", "TXT"): ['"v=spf1 include:other -all"']}
+    )
+    rec = {"purpose": "ownership", "type": "TXT", "host": "acme.com",
+           "value": "loftbox-verification=abc123"}
+    results = _run_route53_with_client(client, [rec])
+    assert results[0][1] == "applied", results
+    vals = _upserted_values(client)
+    # 기존 SPF 와 LoftBox 값이 모두 있어야 한다(merge — 고객 값 삭제 금지).
+    assert '"v=spf1 include:other -all"' in vals, vals
+    assert '"loftbox-verification=abc123"' in vals, vals
+    assert len(vals) == 2, vals
+
+
+def test_route53_txt_skip_when_already_present():
+    # LoftBox 값이 이미 set 에 있으면 skip — 쓰기 없음.
+    client = _FakeRoute53ApplyClient(
+        {("acme.com.", "TXT"): ['"v=spf1 -all"', '"loftbox-verification=abc123"']}
+    )
+    rec = {"purpose": "ownership", "type": "TXT", "host": "acme.com",
+           "value": "loftbox-verification=abc123"}
+    results = _run_route53_with_client(client, [rec])
+    assert results[0][1] == "skipped", results
+    assert client.changes == [], client.changes  # 쓰기 없음
+
+
+def test_route53_mx_merge_preserves_existing():
+    # 기존 백업 MX 가 있고 LoftBox MX 추가 → merge 된 set 에 둘 다.
+    client = _FakeRoute53ApplyClient(
+        {("acme.com.", "MX"): ["20 backup.mail"]}
+    )
+    rec = {"purpose": "inbound", "type": "MX", "host": "acme.com",
+           "value": "10 mail.loftbox.net"}
+    results = _run_route53_with_client(client, [rec])
+    assert results[0][1] == "applied", results
+    vals = _upserted_values(client)
+    assert "20 backup.mail" in vals, vals
+    assert "10 mail.loftbox.net" in vals, vals
+    assert len(vals) == 2, vals
+
+
+def test_route53_txt_create_when_no_existing():
+    # 기존 RRSet 이 없으면 우리 값 하나로 생성.
+    client = _FakeRoute53ApplyClient({})
+    rec = {"purpose": "ownership", "type": "TXT", "host": "_loftbox.acme.com",
+           "value": "loftbox-verification=abc123"}
+    results = _run_route53_with_client(client, [rec])
+    assert results[0][1] == "applied", results
+    vals = _upserted_values(client)
+    assert vals == ['"loftbox-verification=abc123"'], vals
+
+
+def test_route53_cname_skip_same():
+    client = _FakeRoute53ApplyClient(
+        {("bounce.acme.com.", "CNAME"): ["rp.loftbox.net"]}
+    )
+    rec = {"purpose": "return-path", "type": "CNAME", "host": "bounce.acme.com",
+           "value": "rp.loftbox.net"}
+    results = _run_route53_with_client(client, [rec])
+    assert results[0][1] == "skipped", results
+    assert client.changes == [], client.changes
+
+
+def test_route53_cname_conflict_without_overwrite():
+    client = _FakeRoute53ApplyClient(
+        {("bounce.acme.com.", "CNAME"): ["old.example.net"]}
+    )
+    rec = {"purpose": "return-path", "type": "CNAME", "host": "bounce.acme.com",
+           "value": "rp.loftbox.net"}
+    results = _run_route53_with_client(client, [rec], overwrite=False)
+    assert results[0][1] == "conflict", results
+    assert client.changes == [], client.changes
+
+
+def test_route53_cname_overwrite_diff():
+    client = _FakeRoute53ApplyClient(
+        {("bounce.acme.com.", "CNAME"): ["old.example.net"]}
+    )
+    rec = {"purpose": "return-path", "type": "CNAME", "host": "bounce.acme.com",
+           "value": "rp.loftbox.net"}
+    results = _run_route53_with_client(client, [rec], overwrite=True)
+    assert results[0][1] == "applied", results
+    vals = _upserted_values(client)
+    assert vals == ["rp.loftbox.net"], vals
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 (cloudflare): 모든 매칭 레코드 확인 — 무관한 레코드 변형 없이 새 레코드 추가.
+# ---------------------------------------------------------------------------
+
+
+class _FakeCfState:
+    """_cf_req 를 흉내내는 가짜 상태. 같은 name+type 에 여러 레코드를 둔다.
+
+    records: [{"id","type","name","content","priority"?}]
+    POST/PUT/DELETE 호출을 self.calls 에 기록한다.
+    """
+
+    def __init__(self, records=None):
+        self.records = list(records or [])
+        self.calls = []
+
+    def __call__(self, method, path, token, body=None):
+        self.calls.append((method, path, body))
+        if method == "GET" and "/dns_records?" in path:
+            q = path.split("?", 1)[1]
+            import urllib.parse as up
+            params = dict(up.parse_qsl(q))
+            matched = [
+                r for r in self.records
+                if r.get("type") == params.get("type") and r.get("name") == params.get("name")
+            ]
+            return 200, {"success": True, "result": matched}
+        if method == "POST":
+            new = dict(body or {})
+            new["id"] = f"rec{len(self.records)}"
+            self.records.append(new)
+            return 200, {"success": True, "result": new}
+        if method == "PUT":
+            rid = path.rsplit("/", 1)[-1]
+            for r in self.records:
+                if r.get("id") == rid:
+                    r.update(body or {})
+                    return 200, {"success": True, "result": r}
+            return 404, {"success": False, "errors": ["not found"]}
+        return 200, {"success": True, "result": {}}
+
+
+def _run_cloudflare_with_state(state, records, overwrite=False):
+    backup = m._cf_req
+    m._cf_req = state
+    backup_env = os.environ.get("CLOUDFLARE_API_TOKEN")
+    os.environ["CLOUDFLARE_API_TOKEN"] = "test-token"
+    try:
+        return m._apply_cloudflare(records, "acme.com", "zone123",
+                                   dry_run=False, overwrite=overwrite)
+    finally:
+        m._cf_req = backup
+        if backup_env is None:
+            os.environ.pop("CLOUDFLARE_API_TOKEN", None)
+        else:
+            os.environ["CLOUDFLARE_API_TOKEN"] = backup_env
+
+
+def test_cloudflare_txt_adds_new_record_not_mutating_existing():
+    # apex 에 무관한 TXT 2개(둘 다 desired 아님) → 새 레코드 POST, 기존 변형 없음.
+    state = _FakeCfState([
+        {"id": "rec0", "type": "TXT", "name": "acme.com", "content": "v=spf1 -all"},
+        {"id": "rec1", "type": "TXT", "name": "acme.com", "content": "google-site-verification=xyz"},
+    ])
+    rec = {"purpose": "ownership", "type": "TXT", "host": "acme.com",
+           "value": "loftbox-verification=abc123"}
+    results = _run_cloudflare_with_state(state, [rec])
+    assert results[0][1] == "applied", results
+    # PUT 이 없어야 한다(무관 레코드 변형 금지). POST 만.
+    methods = [c[0] for c in state.calls]
+    assert "PUT" not in methods, state.calls
+    assert "POST" in methods, state.calls
+    # 기존 두 레코드 content 가 그대로 보존되어야 한다.
+    contents = sorted(r["content"] for r in state.records)
+    assert "v=spf1 -all" in contents
+    assert "google-site-verification=xyz" in contents
+    assert "loftbox-verification=abc123" in contents
+    assert len(state.records) == 3, state.records
+
+
+def test_cloudflare_txt_skip_when_one_matches():
+    # 기존 레코드 중 하나가 desired 와 동일 → skip, 쓰기 없음.
+    state = _FakeCfState([
+        {"id": "rec0", "type": "TXT", "name": "acme.com", "content": "v=spf1 -all"},
+        {"id": "rec1", "type": "TXT", "name": "acme.com", "content": "loftbox-verification=abc123"},
+    ])
+    rec = {"purpose": "ownership", "type": "TXT", "host": "acme.com",
+           "value": "loftbox-verification=abc123"}
+    results = _run_cloudflare_with_state(state, [rec])
+    assert results[0][1] == "skipped", results
+    methods = [c[0] for c in state.calls]
+    assert "POST" not in methods and "PUT" not in methods, state.calls
+
+
+def test_cloudflare_mx_adds_new_preserving_backup():
+    state = _FakeCfState([
+        {"id": "rec0", "type": "MX", "name": "acme.com", "content": "backup.mail", "priority": 20},
+    ])
+    rec = {"purpose": "inbound", "type": "MX", "host": "acme.com",
+           "value": "10 mail.loftbox.net"}
+    results = _run_cloudflare_with_state(state, [rec])
+    assert results[0][1] == "applied", results
+    methods = [c[0] for c in state.calls]
+    assert "PUT" not in methods, state.calls
+    prio = sorted(r["priority"] for r in state.records)
+    assert prio == [10, 20], state.records
+
+
+def test_cloudflare_cname_skip_same():
+    state = _FakeCfState([
+        {"id": "rec0", "type": "CNAME", "name": "bounce.acme.com", "content": "rp.loftbox.net"},
+    ])
+    rec = {"purpose": "return-path", "type": "CNAME", "host": "bounce.acme.com",
+           "value": "rp.loftbox.net"}
+    results = _run_cloudflare_with_state(state, [rec])
+    assert results[0][1] == "skipped", results
+    methods = [c[0] for c in state.calls]
+    assert "POST" not in methods and "PUT" not in methods, state.calls
+
+
+def test_cloudflare_cname_overwrite_diff_puts_same_record():
+    state = _FakeCfState([
+        {"id": "rec0", "type": "CNAME", "name": "bounce.acme.com", "content": "old.example.net"},
+    ])
+    rec = {"purpose": "return-path", "type": "CNAME", "host": "bounce.acme.com",
+           "value": "rp.loftbox.net"}
+    results = _run_cloudflare_with_state(state, [rec], overwrite=True)
+    assert results[0][1] == "applied", results
+    methods = [c[0] for c in state.calls]
+    assert "PUT" in methods, state.calls
+    # PUT 은 동일한 기존 레코드(rec0)를 교체해야 한다(새 레코드 생성 아님).
+    assert len(state.records) == 1, state.records
+    assert state.records[0]["content"] == "rp.loftbox.net", state.records
+
+
+def test_cloudflare_cname_conflict_without_overwrite():
+    state = _FakeCfState([
+        {"id": "rec0", "type": "CNAME", "name": "bounce.acme.com", "content": "old.example.net"},
+    ])
+    rec = {"purpose": "return-path", "type": "CNAME", "host": "bounce.acme.com",
+           "value": "rp.loftbox.net"}
+    results = _run_cloudflare_with_state(state, [rec], overwrite=False)
+    assert results[0][1] == "conflict", results
+    methods = [c[0] for c in state.calls]
+    assert "POST" not in methods and "PUT" not in methods, state.calls
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
