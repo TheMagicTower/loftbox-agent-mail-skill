@@ -558,6 +558,38 @@ def test_cloudflare_cname_conflict_without_overwrite():
     assert "POST" not in methods and "PUT" not in methods, state.calls
 
 
+class _FakeCfLookupFailState:
+    """GET dns_records 조회가 항상 non-200 을 반환하는 가짜 상태(rate limit/권한 등).
+
+    POST/PUT 호출은 self.calls 에 기록된다 — fail-closed 면 한 번도 없어야 한다.
+    """
+
+    def __init__(self, code=429):
+        self.code = code
+        self.calls = []
+
+    def __call__(self, method, path, token, body=None):
+        self.calls.append((method, path, body))
+        if method == "GET" and "/dns_records?" in path:
+            return self.code, {"success": False, "errors": ["rate limited"]}
+        # 쓰기는 일어나선 안 되지만, 혹시 일어나도 성공처럼 보이게 둔다(검증은 calls 로).
+        return 200, {"success": True, "result": {"id": "recX"}}
+
+
+def test_cloudflare_lookup_failure_fails_closed_no_write():
+    # 기존 레코드 GET 이 non-200(예: 429 rate limit)이면 POST/PUT 을 절대 하지 않는다.
+    state = _FakeCfLookupFailState(code=429)
+    rec = {"purpose": "ownership", "type": "TXT", "host": "acme.com",
+           "value": "loftbox-verification=abc123"}
+    results = _run_cloudflare_with_state(state, [rec])
+    # 레코드는 error 로 표시되고 쓰기는 없어야 한다.
+    assert results[0][1] == "error", results
+    methods = [c[0] for c in state.calls]
+    assert "POST" not in methods and "PUT" not in methods, state.calls
+    err_count = sum(1 for _r, s, _d in results if s == "error")
+    assert err_count > 0, results
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

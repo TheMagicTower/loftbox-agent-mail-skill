@@ -443,17 +443,29 @@ def _resolve_cloudflare_zone(token, domain):
     return None
 
 
+class CloudflareLookupError(Exception):
+    """기존 cloudflare 레코드 조회 실패(non-200) 를 나타낸다 — fail-closed 신호."""
+
+
 def _cf_existing_records(token, zone_id, rtype, name):
     """name+type 에 매칭되는 cloudflare 레코드 전체 목록을 반환한다.
 
     cloudflare 는 각 TXT/MX 를 별개 레코드로 저장하므로(첫 번째만 보면 무관한
-    레코드를 오인/변형할 수 있음) 매칭 전체를 가져온다. 없으면 [] 반환.
+    레코드를 오인/변형할 수 있음) 매칭 전체를 가져온다. 200-with-empty-result 면
+    [] 반환(genuinely-empty — 정당한 create 케이스).
+
+    중요: 조회 실패(권한 누락/throttling/transient 5xx 등 non-200)는 절대 [] 로
+    삼키지 않는다 — 그러면 호출부가 "기존 레코드 없음"으로 오인해 중복 TXT/MX 를
+    POST 하거나 잘못된 conflict 판단을 한다(route53 path 와 동일한 위험).
+    따라서 non-200 은 CloudflareLookupError 를 던져 호출부가 fail-closed(쓰기
+    건너뜀) 하도록 한다.
     """
     q = urllib.parse.urlencode({"type": rtype, "name": name})
     code, payload = _cf_req("GET", f"/zones/{zone_id}/dns_records?{q}", token)
     if code == 200 and isinstance(payload.get("result"), list):
         return payload["result"]
-    return []
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    raise CloudflareLookupError(f"HTTP {code}: {errors}")
 
 
 def _cf_same(existing, payload):
@@ -491,7 +503,22 @@ def _apply_cloudflare(records, domain, zone_id, dry_run, overwrite):
         if payload.get("priority") is not None:
             desc += f" (priority {payload['priority']})"
 
-        existing = _cf_existing_records(token, zone_id, payload["type"], payload["name"])
+        # 기존 레코드 조회 실패(권한 누락/throttling/transient)는 절대 POST/PUT 으로
+        # 이어지면 안 된다 — 빈 set 으로 오인하면 중복 TXT/MX 를 생성하거나 잘못된
+        # conflict 판단을 한다. 따라서 fail-closed: 이 레코드를 error 로 표시하고
+        # 어떤 쓰기보다 먼저 건너뛴다(route53 path 와 동일 구조).
+        try:
+            existing = _cf_existing_records(
+                token, zone_id, payload["type"], payload["name"]
+            )
+        except CloudflareLookupError as exc:
+            results.append((
+                rec,
+                "error",
+                f"기존 cloudflare 레코드를 읽지 못해 건너뜀(중복/덮어쓰기 방지) "
+                f"{payload['name']}/{payload['type']} — API 토큰 권한 확인 / 재시도 필요: {exc}",
+            ))
+            continue
 
         if payload["type"] in ("TXT", "MX"):
             # 멀티값 타입: cloudflare 는 각 값을 별개 레코드로 저장한다. 우리 값과
