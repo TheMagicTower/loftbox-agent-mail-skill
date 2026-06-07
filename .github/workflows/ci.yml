@@ -26,5 +26,15 @@ jobs:
             echo "No skill scripts found" >&2
             exit 1
           fi
+      - name: Compile test files
+        run: |
+          set -eu
+          for f in tests/*.py */scripts/test_*.py; do
+            [ -e "$f" ] || continue
+            echo "py_compile $f"
+            python3 -m py_compile "$f"
+          done
       - name: Run apply-dns mapping tests
         run: python3 setup-loftbox-domain/scripts/test_apply_dns_mapping.py
+      - name: Run offboarding --yes gate tests
+        run: python3 tests/test_offboard_gate.py

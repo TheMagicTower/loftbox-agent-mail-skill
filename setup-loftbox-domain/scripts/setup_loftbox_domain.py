@@ -11,6 +11,7 @@
   status <id>      구조화된 상태(inbound/outbound 플래그 + next_actions)
   verify <id>      검증 트리거(DNS 설정 후)
   apply-dns <id>   next_actions DNS 레코드를 route53/cloudflare에 자동 적용
+  delete <id>      도메인 soft-delete (해지). --yes 머신 게이트로 보호.
 """
 import argparse
 import json
@@ -616,6 +617,51 @@ def _guess_domain(records):
     return ".".join(labels[-2:])
 
 
+# ---------------------------------------------------------------------------
+# delete: 도메인 해지(soft-delete) — --yes 머신 게이트로 보호.
+# ---------------------------------------------------------------------------
+
+
+def _domain_name_for(domain_id):
+    """도메인 id 로 도메인명을 싸게 조회(실패해도 무시 — 대상 표시는 best-effort)."""
+    qid = urllib.parse.quote(domain_id, safe="")
+    code, body = _req("GET", f"/v1/domains/{qid}/status")
+    if code != 200:
+        return None
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return None
+    return payload.get("domain") or payload.get("name")
+
+
+def delete_domain(domain_id, yes):
+    """도메인 soft-delete. --yes 없으면 대상만 표시하고 DELETE 를 발행하지 않는다.
+
+    머신 게이트: 산문 가드에 더해 CLI 자체가 실수/주입에 한 겹 방어한다.
+    """
+    name = _domain_name_for(domain_id)
+    target = domain_id if not name else f"{domain_id} ({name})"
+    if not yes:
+        print(f"대상 도메인: {target}")
+        print("이것은 파괴적입니다(soft-delete). 확인 후 --yes 로 재실행하여 영구 soft-delete 하세요.")
+        print("주의: 도메인을 삭제하기 전에 그 도메인에 바인딩된 메일박스(들)를 먼저 삭제하세요"
+              " (register-loftbox-mail-agent offboarding 참고).")
+        return
+    qid = urllib.parse.quote(domain_id, safe="")
+    code, body = _req("DELETE", f"/v1/domains/{qid}")
+    if code in (200, 204):
+        print(f"삭제됨(soft-delete): {target}")
+        if body:
+            print(body)
+        return
+    if code == 404:
+        print(f"없음/이미 삭제됨(404): {target}")
+        return
+    print(body, file=sys.stderr)
+    raise SystemExit(code)
+
+
 def main():
     p = argparse.ArgumentParser(description="LoftBox 도메인 온보딩 (고객 에이전트용)")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -630,6 +676,10 @@ def main():
     ad.add_argument("--overwrite", action="store_true", help="기존 값과 다르면 덮어쓰기")
     ad.add_argument("--zone-id", default=None, help="hosted zone / CF zone id 직접 지정")
     ad.add_argument("id", help="도메인 id (dom_…)")
+    dl = sub.add_parser("delete", help="도메인 soft-delete (해지) — --yes 필요")
+    dl.add_argument("--yes", action="store_true",
+                    help="머신 게이트: 이 플래그가 있을 때만 실제 DELETE 발행")
+    dl.add_argument("id", help="도메인 id (dom_…)")
     args = p.parse_args()
 
     if args.cmd == "add":
@@ -642,6 +692,8 @@ def main():
         _print_or_exit(*_req("POST", f"/v1/domains/{urllib.parse.quote(args.id, safe='')}/verify"))
     elif args.cmd == "apply-dns":
         apply_dns(args.id, args.provider, args.dry_run, args.overwrite, args.zone_id)
+    elif args.cmd == "delete":
+        delete_domain(args.id, args.yes)
 
 
 if __name__ == "__main__":
