@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-SKILL_NAMES="register-loftbox-mail-agent send-loftbox-mail check-loftbox-mail setup-loftbox-domain"
+SKILL_NAMES="register-loftbox-mail-agent send-loftbox-mail check-loftbox-mail setup-loftbox-domain onboard-business-domain"
 DEFAULT_ARCHIVE_URL="https://github.com/TheMagicTower/loftbox-agent-mail-skill/archive/refs/heads/main.tar.gz"
 ARCHIVE_URL="${LOFTBOX_SKILL_ARCHIVE_URL:-}"
 VERSION_URL="${LOFTBOX_SKILL_VERSION_URL:-https://loftbox.net/skill-version.json}"
