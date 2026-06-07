@@ -150,17 +150,52 @@ def _fqdn(host):
     return host
 
 
+def _is_dns_suffix(zone_fqdn, host_fqdn):
+    """zone_fqdn 이 host_fqdn 의 DNS 접미사인지(같거나 라벨 경계로 끝남)."""
+    zone = zone_fqdn.lower()
+    host = host_fqdn.lower()
+    return host == zone or host.endswith("." + zone)
+
+
+def _route53_txt_value(value):
+    """TXT rdata 를 route53 형식으로 만든다.
+
+    DNS TXT 한 character-string 은 ≤255 바이트. 255 초과 값은 ≤255 청크로 나눠
+    각각 큰따옴표로 감싸 공백으로 잇는다: `"chunk1" "chunk2" ...`. route53 은
+    이 멀티-스트링 형식만 받아들인다(단일 따옴표로는 255 초과 시 거부).
+    """
+    if len(value.encode("utf-8")) <= 255:
+        return '"' + value + '"'
+    # 문자 경계를 보존하면서 각 청크의 바이트 길이를 ≤255 로 유지.
+    chunks = []
+    cur = ""
+    cur_bytes = 0
+    for ch in value:
+        ch_bytes = len(ch.encode("utf-8"))
+        if cur_bytes + ch_bytes > 255:
+            chunks.append(cur)
+            cur = ch
+            cur_bytes = ch_bytes
+        else:
+            cur += ch
+            cur_bytes += ch_bytes
+    if cur:
+        chunks.append(cur)
+    return " ".join('"' + c + '"' for c in chunks)
+
+
 def build_route53_change(record):
     """next_actions 한 건을 route53 ChangeBatch의 한 Change(UPSERT)로 매핑.
 
-    TXT 는 리터럴 큰따옴표로 감싼다(route53 요구). MX 는 'priority host' 형태를
+    TXT 는 리터럴 큰따옴표로 감싼다(route53 요구). 255바이트 초과 TXT 는 ≤255
+    청크로 분할해 여러 큰따옴표 세그먼트로 잇는다. MX 는 'priority host' 형태를
     그대로 Value 로 둔다. CNAME 은 value 그대로.
     """
     rtype = record["type"]
     host = record["host"]
     value = record["value"]
     if rtype == "TXT":
-        rr_value = '"' + value + '"'
+        rr_value = _route53_txt_value(value)
     else:
         # MX("10 mail.loftbox.net"), CNAME 모두 value 그대로.
         rr_value = value
@@ -198,8 +233,9 @@ def _apply_route53(records, domain, zone_id, dry_run, overwrite):
 
     client = boto3.client("route53")
 
+    zone_name = None
     if not zone_id:
-        zone_id = _resolve_route53_zone(client, domain)
+        zone_id, zone_name = _resolve_route53_zone(client, domain)
     if not zone_id:
         raise SystemExit(
             "route53 hosted zone을 찾지 못했습니다 — --zone-id 로 직접 지정하세요."
@@ -210,6 +246,14 @@ def _apply_route53(records, domain, zone_id, dry_run, overwrite):
         change = build_route53_change(rec)
         rrset = change["ResourceRecordSet"]
         desired_value = rrset["ResourceRecords"][0]["Value"]
+
+        # 안전장치: zone 이 레코드 host 의 DNS 접미사가 아니면 쓰지 않는다(cross-zone 방지).
+        # zone_name 을 아는 경우(추론된 zone)만 검사 — --zone-id 직접 지정은 사용자 책임.
+        if zone_name is not None and not _is_dns_suffix(zone_name, rrset["Name"]):
+            results.append(
+                (rec, "skipped", f"zone {zone_name} 이 host {rrset['Name']} 의 접미사가 아님")
+            )
+            continue
 
         existing = _route53_existing_value(client, zone_id, rrset["Name"], rrset["Type"])
         if existing is not None:
@@ -230,26 +274,46 @@ def _apply_route53(records, domain, zone_id, dry_run, overwrite):
     return results
 
 
+def _zone_candidates(base):
+    """base 도메인에서 most-specific → registrable 순으로 후보 zone 이름을 만든다.
+
+    예: `mail.acme.com` → [`mail.acme.com`, `acme.com`]. bare TLD(`com`)까지는
+    내려가지 않는다(>=2 레이블에서 멈춤).
+    """
+    labels = _normalize_domain(base).split(".")
+    candidates = []
+    # 레이블이 2개 이상 남는 동안만(공개 접미사/ bare TLD 직전에서 멈춤).
+    for start in range(0, len(labels) - 1):
+        candidates.append(".".join(labels[start:]))
+    return candidates
+
+
 def _resolve_route53_zone(client, domain):
+    """레코드가 서브도메인이어도 정확한 public hosted zone 을 찾는다.
+
+    route53 list_hosted_zones_by_name 는 요청 이름에서 사전순으로 나열하므로
+    부모 zone(`acme.com.`)이 서브도메인(`_loftbox.acme.com`)보다 앞에 정렬되면
+    반환되지 않는다. 따라서 most-specific → registrable 후보 접미사를 만들어
+    각 후보 이름으로 EXACT 매칭을 조회한다.
+
+    반환: (zone_id, zone_fqdn) 또는 (None, None).
+    """
     if not domain:
-        return None
-    target = _fqdn(_normalize_domain(domain))
-    try:
-        resp = client.list_hosted_zones_by_name(DNSName=target)
-    except Exception:  # noqa: BLE001
-        return None
-    best = None
-    best_len = -1
-    for z in resp.get("HostedZones", []):
+        return None, None
+    for candidate in _zone_candidates(domain):
+        try:
+            resp = client.list_hosted_zones_by_name(DNSName=candidate, MaxItems="1")
+        except Exception:  # noqa: BLE001
+            continue
+        zones = resp.get("HostedZones", [])
+        if not zones:
+            continue
+        z = zones[0]
         if z.get("Config", {}).get("PrivateZone"):
             continue
-        zname = z.get("Name", "")
-        # target 이 zone 으로 끝나면(서브도메인 포함) 후보.
-        if target == zname or target.endswith("." + zname):
-            if len(zname) > best_len:
-                best = z.get("Id")
-                best_len = len(zname)
-    return best
+        if z.get("Name", "") == candidate + ".":
+            return z.get("Id"), z.get("Name", "")
+    return None, None
 
 
 def _route53_existing_value(client, zone_id, name, rtype):
@@ -375,10 +439,6 @@ def _apply_cloudflare(records, domain, zone_id, dry_run, overwrite):
         desc = f"{payload['type']} {payload['name']} -> {payload['content']}"
         if payload.get("priority") is not None:
             desc += f" (priority {payload['priority']})"
-
-        if dry_run:
-            results.append((rec, "dry-run", desc))
-            continue
 
         existing = _cf_existing_record(token, zone_id, payload["type"], payload["name"])
         if existing is not None:
