@@ -256,7 +256,21 @@ def _apply_route53(records, domain, zone_id, dry_run, overwrite):
             continue
 
         # 기존 RRSet 의 전체 값 목록을 가져온다(name+type 당 route53 RRSet 은 1개).
-        existing_values = _route53_existing_values(client, zone_id, rrset["Name"], rrset["Type"])
+        # 읽기 실패(권한 누락/throttling/transient)는 절대 UPSERT 로 이어지면 안 된다 —
+        # 빈 set 으로 오인하면 멀티값 RRSet 을 LoftBox 값만으로 교체해 고객 레코드를
+        # 삭제한다. 따라서 fail-closed: 이 레코드를 error 로 표시하고 건너뛴다.
+        try:
+            existing_values = _route53_existing_values(
+                client, zone_id, rrset["Name"], rrset["Type"]
+            )
+        except Exception as exc:  # noqa: BLE001 - 읽기 실패는 쓰기 금지
+            results.append((
+                rec,
+                "error",
+                f"기존 RRSet 을 읽지 못해 건너뜀(덮어쓰기 방지) {rrset['Name']}/{rrset['Type']} "
+                f"— ListResourceRecordSets 권한 확인 필요: {exc}",
+            ))
+            continue
 
         if rrset["Type"] in ("TXT", "MX"):
             # 멀티값 타입: route53 UPSERT 는 RRSet 전체를 교체하므로, LoftBox 값만
@@ -315,22 +329,28 @@ def _resolve_route53_zone(client, domain):
     반환되지 않는다. 따라서 most-specific → registrable 후보 접미사를 만들어
     각 후보 이름으로 EXACT 매칭을 조회한다.
 
+    split-horizon 주의: 한 계정에 같은 이름의 private/public hosted zone 이 모두
+    있을 수 있다. private 이 사전순 앞에 정렬되면 첫 zone 만 보는 코드는 public
+    을 놓친다. 따라서 각 후보에서 EXACT 이름 매칭 전체를 스캔해 PrivateZone==False
+    인 첫 zone 을 고른다.
+
     반환: (zone_id, zone_fqdn) 또는 (None, None).
     """
     if not domain:
         return None, None
     for candidate in _zone_candidates(domain):
         try:
-            resp = client.list_hosted_zones_by_name(DNSName=candidate, MaxItems="1")
+            resp = client.list_hosted_zones_by_name(DNSName=candidate)
         except Exception:  # noqa: BLE001
             continue
-        zones = resp.get("HostedZones", [])
-        if not zones:
-            continue
-        z = zones[0]
-        if z.get("Config", {}).get("PrivateZone"):
-            continue
-        if z.get("Name", "") == candidate + ".":
+        target = candidate + "."
+        for z in resp.get("HostedZones", []):
+            # 정확한 이름 매칭만(접두사/접미사 무관 zone 제외).
+            if z.get("Name", "") != target:
+                continue
+            # private zone 은 제외 — 같은 이름의 public zone 이 뒤에 있을 수 있다.
+            if z.get("Config", {}).get("PrivateZone"):
+                continue
             return z.get("Id"), z.get("Name", "")
     return None, None
 
@@ -339,18 +359,21 @@ def _route53_existing_values(client, zone_id, name, rtype):
     """name+type 에 해당하는 기존 RRSet 의 전체 Value 목록을 반환한다.
 
     route53 는 같은 name+type 을 단일 RRSet(여러 ResourceRecords)로 저장하므로
-    멀티값(TXT/MX)을 보존하려면 전체 목록이 필요하다. RRSet 이 없으면 [] 반환.
-    StartRecordName/Type 으로 조회 후 정확히 name+type 인 RRSet 만 매칭한다.
+    멀티값(TXT/MX)을 보존하려면 전체 목록이 필요하다. API 가 성공했지만 해당
+    RRSet 이 없으면 [] 반환(genuinely-empty). StartRecordName/Type 으로 조회 후
+    정확히 name+type 인 RRSet 만 매칭한다.
+
+    중요: list_resource_record_sets 실패(권한 누락/throttling/transient)는 절대
+    [] 로 삼키지 않는다 — 그러면 호출부가 "기존 값 없음"으로 오인해 RRSet 전체를
+    LoftBox 값만으로 UPSERT(=교체)하여 고객의 기존 SPF/TXT/백업 MX 를 삭제한다.
+    예외는 그대로 전파하여 호출부가 fail-closed(쓰기 건너뜀) 하도록 한다.
     """
-    try:
-        resp = client.list_resource_record_sets(
-            HostedZoneId=zone_id,
-            StartRecordName=name,
-            StartRecordType=rtype,
-            MaxItems="1",
-        )
-    except Exception:  # noqa: BLE001
-        return []
+    resp = client.list_resource_record_sets(
+        HostedZoneId=zone_id,
+        StartRecordName=name,
+        StartRecordType=rtype,
+        MaxItems="1",
+    )
     for rrset in resp.get("ResourceRecordSets", []):
         if rrset.get("Name") == name and rrset.get("Type") == rtype:
             return [r.get("Value") for r in rrset.get("ResourceRecords", []) if r.get("Value") is not None]

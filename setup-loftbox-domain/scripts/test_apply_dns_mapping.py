@@ -178,6 +178,49 @@ def test_route53_zone_inference_excludes_private():
     assert zone_id is None, (zone_id, zone_name)
 
 
+class _FakeRoute53SplitHorizonClient:
+    """같은 이름의 private/public zone 을 함께 반환하는 가짜 클라이언트.
+
+    private zone 이 사전순(또는 반환 순서)으로 먼저 오도록 둔다. exact-name 스캔이
+    private 를 건너뛰고 public zone 을 골라야 한다.
+    """
+
+    def __init__(self, zones):
+        # zones: [{"Id","Name","PrivateZone"}] — 반환 순서 그대로 유지.
+        self.zones = [
+            {"Id": z["Id"], "Name": z["Name"],
+             "Config": {"PrivateZone": z["PrivateZone"]}}
+            for z in zones
+        ]
+
+    def list_hosted_zones_by_name(self, DNSName=None, MaxItems=None):
+        start = DNSName if DNSName.endswith(".") else DNSName + "."
+        result = [z for z in self.zones if z["Name"] >= start]
+        if MaxItems is not None:
+            result = result[: int(MaxItems)]
+        return {"HostedZones": result}
+
+
+def test_route53_zone_inference_split_horizon_picks_public():
+    # 같은 이름의 private(먼저) + public zone → public 의 id 를 골라야 한다.
+    client = _FakeRoute53SplitHorizonClient([
+        {"Id": "/hostedzone/ZPRIVATE", "Name": "acme.com.", "PrivateZone": True},
+        {"Id": "/hostedzone/ZPUBLIC", "Name": "acme.com.", "PrivateZone": False},
+    ])
+    zone_id, zone_name = m._resolve_route53_zone(client, "_loftbox.acme.com")
+    assert zone_id == "/hostedzone/ZPUBLIC", (zone_id, zone_name)
+    assert zone_name == "acme.com.", (zone_id, zone_name)
+
+
+def test_route53_zone_inference_all_private_returns_none():
+    # 같은 이름이 전부 private 면 매칭 없음(None).
+    client = _FakeRoute53SplitHorizonClient([
+        {"Id": "/hostedzone/ZPRIVATE", "Name": "acme.com.", "PrivateZone": True},
+    ])
+    zone_id, zone_name = m._resolve_route53_zone(client, "_loftbox.acme.com")
+    assert zone_id is None and zone_name is None, (zone_id, zone_name)
+
+
 def test_zone_candidates_walk():
     assert m._zone_candidates("mail.acme.com") == ["mail.acme.com", "acme.com"]
     assert m._zone_candidates("acme.com") == ["acme.com"]
@@ -335,6 +378,37 @@ def test_route53_cname_overwrite_diff():
     assert results[0][1] == "applied", results
     vals = _upserted_values(client)
     assert vals == ["rp.loftbox.net"], vals
+
+
+class _FakeRoute53ReadFailClient:
+    """list_resource_record_sets 가 항상 예외를 던지는 클라이언트.
+
+    change_resource_record_sets 호출은 self.changes 에 기록한다 — fail-closed 면
+    한 번도 호출되지 않아야 한다.
+    """
+
+    def __init__(self):
+        self.changes = []
+
+    def list_resource_record_sets(self, **_kwargs):
+        raise RuntimeError("AccessDenied: ListResourceRecordSets")
+
+    def change_resource_record_sets(self, HostedZoneId=None, ChangeBatch=None):
+        self.changes.append(ChangeBatch)
+        return {"ChangeInfo": {"Id": "/change/C1", "Status": "PENDING"}}
+
+
+def test_route53_read_failure_fails_closed_no_upsert():
+    # 기존 RRSet 읽기가 실패하면 UPSERT 를 절대 하지 않는다(고객 레코드 삭제 방지).
+    client = _FakeRoute53ReadFailClient()
+    rec = {"purpose": "ownership", "type": "TXT", "host": "acme.com",
+           "value": "loftbox-verification=abc123"}
+    results = _run_route53_with_client(client, [rec])
+    # 레코드는 error 로 표시되고 쓰기는 없어야 한다.
+    assert results[0][1] == "error", results
+    assert client.changes == [], client.changes  # UPSERT 없음 — fail-closed
+    err_count = sum(1 for _r, s, _d in results if s == "error")
+    assert err_count > 0, results
 
 
 # ---------------------------------------------------------------------------
