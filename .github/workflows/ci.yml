@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Compile all skill scripts
+        run: |
+          set -eu
+          found=0
+          for f in */scripts/*.py; do
+            [ -e "$f" ] || continue
+            found=1
+            echo "py_compile $f"
+            python3 -m py_compile "$f"
+          done
+          if [ "$found" = "0" ]; then
+            echo "No skill scripts found" >&2
+            exit 1
+          fi
+      - name: Run apply-dns mapping tests
+        run: python3 setup-loftbox-domain/scripts/test_apply_dns_mapping.py
