@@ -11,7 +11,9 @@ the user asks the agent to check replies manually.
 ## Required Configuration
 
 - `LOFTBOX_API_KEY`: server-side API key.
-- `LOFTBOX_MAILBOX_ID`: mailbox UUID or `mb_...` public ID.
+- `LOFTBOX_MAILBOX_ID`: mailbox UUID or `mb_...` public ID (single mailbox).
+- `LOFTBOX_MAILBOX_IDS`: optional, comma-separated mailbox ids to poll in one
+  pass (multi-mailbox). Takes precedence over `LOFTBOX_MAILBOX_ID` for `list`.
 - `LOFTBOX_BASE_URL`: optional, defaults to `https://api.loftbox.net`.
 
 Keep the API key server-side. Do not print it or store it in client-visible
@@ -34,6 +36,21 @@ curl -sS "${LOFTBOX_BASE_URL:-https://api.loftbox.net}/v1/mailboxes/$LOFTBOX_MAI
 
 The response contains unacknowledged inbound messages in `data` and may include
 `next_cursor`. Process messages in a durable way before acking.
+
+### Polling multiple mailboxes
+
+When `LOFTBOX_MAILBOX_IDS` is set (or `--mailbox-ids a,b,c` is passed), one
+`list` call polls every mailbox and prints a combined object:
+
+```json
+{"mailboxes": [
+  {"mailbox_id": "mb_a", "inbox": {"data": [ ... ], "next_cursor": null}},
+  {"mailbox_id": "mb_b", "error": {"status": 404, "body": "..."}}
+]}
+```
+
+A single failing mailbox is reported under `error` and does not block the
+others. With exactly one mailbox the output is unchanged (the raw response).
 
 ## Inbound Security Guardrails
 
@@ -74,6 +91,13 @@ visible work. Ack is idempotent.
 
 ```bash
 python3 "$SKILL_DIR/scripts/check_loftbox_mail.py" ack --message-id msg_...
+```
+
+When polling multiple mailboxes, ack targets one mailbox — pass the mailbox the
+message came from explicitly (the `list` output's `mailbox_id`):
+
+```bash
+python3 "$SKILL_DIR/scripts/check_loftbox_mail.py" ack --mailbox-id mb_a --message-id msg_...
 ```
 
 Equivalent API request:
