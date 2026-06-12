@@ -38,3 +38,5 @@ jobs:
         run: python3 setup-loftbox-domain/scripts/test_apply_dns_mapping.py
       - name: Run offboarding --yes gate tests
         run: python3 tests/test_offboard_gate.py
+      - name: Run check-loftbox-mail mailbox-resolution tests
+        run: python3 tests/test_check_mailbox_resolution.py
