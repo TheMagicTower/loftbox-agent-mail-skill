@@ -6,7 +6,8 @@
 조직 도메인만 다룬다.
 
 명령:
-  add <domain>     도메인 추가 (이미 존재하면 409 → 자기 org에서 활성 행 resolve)
+  add <domain>     도메인 추가 — 코어가 멱등 처리(#209): 자기 org 활성=200 기존 행,
+                   자기 org 삭제분=같은 id 재활성 201, 신규=201, 타 조직 점유=409
   dns <id>         설정할 DNS 레코드 목록
   status <id>      구조화된 상태(inbound/outbound 플래그 + next_actions)
   verify <id>      검증 트리거(DNS 설정 후)
@@ -64,29 +65,18 @@ def _print_or_exit(code, body):
 def add(domain):
     domain = _normalize_domain(domain)
     code, body = _req("POST", "/v1/domains", {"domain": domain})
+    # 코어 #209 이후 create 는 멱등: 200=이미 이 org 의 활성 도메인(기존 행),
+    # 201=신규 또는 삭제분 같은 id 재활성. 자기 org 의 활성/삭제 행은 서버가
+    # 직접 resolve 하므로 클라이언트측 목록 조회 분기가 불필요해졌다.
     if code in (200, 201):
         print(body)
         return
     if code == 409:
-        # 자기 org 목록에서 status != 'deleted' 인 동일 도메인만 resolve.
-        # 도메인은 대소문자 무시 — 양쪽 정규화 후 비교(서버는 소문자 정규화).
-        c2, b2 = _req("GET", "/v1/domains")
-        try:
-            rows = json.loads(b2).get("data", []) if c2 == 200 else []
-        except (ValueError, AttributeError):
-            rows = []
-        same = [r for r in rows if _normalize_domain(str(r.get("domain", ""))) == domain]
-        active = [r for r in same if r.get("status") != "deleted"]
-        deleted = [r for r in same if r.get("status") == "deleted"]
-        if active:
-            print(json.dumps(active[0]))
-            return
-        if deleted:
-            raise SystemExit(
-                "이 도메인은 이전에 삭제되었습니다 — 재추가는 아직 지원되지 않습니다(운영자 조치 필요)."
-            )
+        # 남은 409 = 다른 조직이 활성으로 점유 중(또는 드문 동시-생성 경합 —
+        # 경합이면 즉시 재시도 시 200 으로 수렴한다).
         raise SystemExit(
-            "이 도메인은 다른 조직이 이미 사용 중일 수 있습니다 — 운영자 조치가 필요합니다."
+            "이 도메인은 다른 조직이 사용 중입니다 — 잠시 후 1회 재시도하고, "
+            "여전히 409 면 운영자에게 에스컬레이션하세요."
         )
     print(body, file=sys.stderr)
     raise SystemExit(code)
