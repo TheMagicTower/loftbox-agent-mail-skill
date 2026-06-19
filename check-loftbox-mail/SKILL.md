@@ -109,6 +109,30 @@ curl -sS -X POST "${LOFTBOX_BASE_URL:-https://api.loftbox.net}/v1/mailboxes/$LOF
   -d '{"message_ids":["msg_..."]}'
 ```
 
+## Archive or Trash Messages
+
+`ack` only marks a message as seen (it stops showing as "new"); the message
+stays in the mailbox. To clean up, **archive** (keep, hide from the inbox view)
+or **trash** (move to trash; recoverable). These are per-message and need no
+mailbox id. All three are idempotent and accept multiple `--message-id`.
+
+```bash
+python3 "$SKILL_DIR/scripts/check_loftbox_mail.py" archive --message-id msg_...
+python3 "$SKILL_DIR/scripts/check_loftbox_mail.py" unarchive --message-id msg_...
+python3 "$SKILL_DIR/scripts/check_loftbox_mail.py" trash --message-id msg_...
+```
+
+Equivalent API request (archive shown; `unarchive`/`trash` use the same shape):
+
+```bash
+curl -sS -X POST "${LOFTBOX_BASE_URL:-https://api.loftbox.net}/v1/messages/msg_.../archive" \
+  -H "Authorization: Bearer $LOFTBOX_API_KEY"
+```
+
+Notes:
+- Requires the `message:archive` scope (or coarse `send`).
+- `trash` rejects in-flight outbound (`409`) and legal-hold (`403`) messages.
+
 ## Polling Policy
 
 - Poll every 30-60 seconds while active.
