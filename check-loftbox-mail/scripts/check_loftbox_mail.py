@@ -156,8 +156,28 @@ def ack_inbox(base, api_key, mailbox_id, message_ids):
         raise SystemExit(exc.status or 1)
 
 
+def dispose_messages(base, api_key, command, message_ids):
+    """Per-message disposition (#303): archive / unarchive / trash. These are
+    message-scoped routes, so no mailbox id is needed. Each id is POSTed
+    independently; a failure (e.g. trash's 409 in-flight outbound or 403
+    legal-hold) is reported on stderr but does not block the other ids. Exit
+    non-zero if any id failed."""
+    failed = False
+    for message_id in message_ids:
+        mid = urllib.parse.quote(message_id, safe="")
+        try:
+            print(http_text("POST", f"{base}/v1/messages/{mid}/{command}", api_key))
+        except RequestError as exc:
+            print(f"{message_id}: {exc.body}", file=sys.stderr)
+            failed = True
+    if failed:
+        raise SystemExit(1)
+
+
 def build_parser():
-    parser = argparse.ArgumentParser(description="Check or acknowledge LoftBox inbox messages.")
+    parser = argparse.ArgumentParser(
+        description="List, acknowledge, archive, or trash LoftBox inbox messages."
+    )
     parser.add_argument("--base-url", default=os.environ.get("LOFTBOX_BASE_URL", "https://api.loftbox.net"))
     parser.add_argument("--api-key", default=os.environ.get("LOFTBOX_API_KEY"))
     # NOTE: --mailbox-id / --mailbox-ids default to None (NOT from env) so an
@@ -178,6 +198,15 @@ def build_parser():
 
     ack_parser = sub.add_parser("ack", help="Acknowledge processed inbound messages.")
     ack_parser.add_argument("--message-id", action="append", required=True)
+
+    # Per-message disposition (#303) — message-scoped, no mailbox id needed.
+    for name, help_text in (
+        ("archive", "Archive messages (hide from inbox view; keeps the message)."),
+        ("unarchive", "Un-archive messages."),
+        ("trash", "Move messages to trash (recoverable via dashboard/API)."),
+    ):
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("--message-id", action="append", required=True)
     return parser
 
 
@@ -190,6 +219,8 @@ def main():
         list_inbox(base, api_key, resolve_mailboxes(args), args.limit, args.cursor)
     elif args.command == "ack":
         ack_inbox(base, api_key, resolve_ack_mailbox(args), args.message_id)
+    elif args.command in ("archive", "unarchive", "trash"):
+        dispose_messages(base, api_key, args.command, args.message_id)
 
 
 if __name__ == "__main__":
