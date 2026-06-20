@@ -53,9 +53,11 @@ The skills walk the agent through owner-email verification, one-time API key han
 
 Installed skills:
 
-- `register-loftbox-mail-agent`: owner verification, API key, agent, mailbox.
-- `send-loftbox-mail`: send operational email through `POST /v1/messages`.
-- `check-loftbox-mail`: safely triage untrusted inbound mail, list inbox messages, and ack processed replies.
+- `register-loftbox-mail-agent`: owner verification, API key, agent, mailbox. Includes offboarding (soft-delete agent/mailbox behind a `--yes` machine gate).
+- `send-loftbox-mail`: send operational email through `POST /v1/messages` (self-hosted SMTP).
+- `check-loftbox-mail`: safely triage untrusted inbound mail, list inbox messages (single or multiple mailboxes via `LOFTBOX_MAILBOX_IDS`), ack processed replies, and archive/unarchive/trash messages.
+- `setup-loftbox-domain`: onboard a customer's own custom domain — add domain, surface DNS records, poll verification, optional auto-apply (Route53/Cloudflare), and domain offboarding.
+- `onboard-business-domain`: end-to-end business onboarding orchestrating `register-loftbox-mail-agent` + `setup-loftbox-domain`.
 
 Installed commands:
 
