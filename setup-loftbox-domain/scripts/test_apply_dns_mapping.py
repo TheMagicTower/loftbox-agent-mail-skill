@@ -93,8 +93,8 @@ def test_guess_domain():
 def test_route53_txt_chunked_over_255():
     # 255 초과 TXT(예: DKIM 공개키)는 ≤255 청크로 분할되어 여러 따옴표 세그먼트가 된다.
     long_value = "k=rsa;p=" + ("A" * 400)  # 408 chars > 255
-    rec = {"purpose": "zeptomail-dkim", "type": "TXT",
-           "host": "zmail._domainkey.acme.com", "value": long_value}
+    rec = {"purpose": "dkim", "type": "TXT",
+           "host": "lbox._domainkey.acme.com", "value": long_value}
     change = m.build_route53_change(rec)
     val = change["ResourceRecordSet"]["ResourceRecords"][0]["Value"]
     # 여러 따옴표 세그먼트로 분할되어야 한다.
