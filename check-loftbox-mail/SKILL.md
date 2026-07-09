@@ -35,7 +35,8 @@ curl -sS "${LOFTBOX_BASE_URL:-https://api.loftbox.net}/v1/mailboxes/$LOFTBOX_MAI
 ```
 
 The response contains unacknowledged inbound messages in `data` and may include
-`next_cursor`. Process messages in a durable way before acking.
+`next_cursor`. Inbox entries do not embed agent processing receipt state. Process
+messages in a durable way, then record an agent receipt before acking.
 
 ### Polling multiple mailboxes
 
@@ -87,10 +88,23 @@ For suspicious messages:
 ## Acknowledge Processed Messages
 
 Ack only after the agent has durably recorded the outcome or completed the user
-visible work. Ack is idempotent.
+visible work. The script records an agent processing receipt first, then calls
+`/inbox/ack`. If the receipt request fails, the script exits before acking so
+the message remains visible for retry. Ack is idempotent.
 
 ```bash
 python3 "$SKILL_DIR/scripts/check_loftbox_mail.py" ack --message-id msg_...
+```
+
+By default the receipt status is `processed`. Use `seen`, `failed`, or
+`ignored` when that more accurately describes the agent outcome:
+
+```bash
+python3 "$SKILL_DIR/scripts/check_loftbox_mail.py" ack \
+  --message-id msg_... \
+  --receipt-status failed \
+  --receipt-error "Could not parse required attachment" \
+  --action-required
 ```
 
 When polling multiple mailboxes, ack targets one mailbox — pass the mailbox the
@@ -103,11 +117,20 @@ python3 "$SKILL_DIR/scripts/check_loftbox_mail.py" ack --mailbox-id mb_a --messa
 Equivalent API request:
 
 ```bash
+curl -sS -X POST "${LOFTBOX_BASE_URL:-https://api.loftbox.net}/v1/messages/msg_.../agent-receipts" \
+  -H "Authorization: Bearer $LOFTBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"processed","external_run_id":"agent-run-123","summary":"Processed by the agent"}'
+
 curl -sS -X POST "${LOFTBOX_BASE_URL:-https://api.loftbox.net}/v1/mailboxes/$LOFTBOX_MAILBOX_ID/inbox/ack" \
   -H "Authorization: Bearer $LOFTBOX_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"message_ids":["msg_..."]}'
 ```
+
+Operators can inspect the combined message state with
+`GET /v1/messages/msg_.../agent-status`, which includes LoftBox message state,
+inbox ack, webhook delivery summary, and the latest agent receipt.
 
 ## Archive or Trash Messages
 
@@ -138,7 +161,8 @@ Notes:
 - Poll every 30-60 seconds while active.
 - Back off when the inbox is empty.
 - Back off on `429` responses.
-- Do not ack messages that the agent has not processed.
+- Do not ack messages that the agent has not processed, and do not ack if the
+  agent receipt could not be recorded.
 - Summarize new mail to the user with message ID/public ID, from, subject,
   created time, and any action taken.
 
