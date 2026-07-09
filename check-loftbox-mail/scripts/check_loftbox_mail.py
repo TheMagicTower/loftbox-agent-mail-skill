@@ -11,6 +11,7 @@ import urllib.request
 # Identify the client so upstream WAF/CDN rules do not block the default
 # urllib User-Agent ("Python-urllib/x.y"), which Cloudflare flags as a bot.
 USER_AGENT = os.environ.get("LOFTBOX_USER_AGENT", "loftbox-mail-skill/1.0 (+https://loftbox.net)")
+AGENT_RECEIPT_STATUSES = {"seen", "processed", "failed", "ignored"}
 
 
 def env(name, default=None):
@@ -156,6 +157,44 @@ def ack_inbox(base, api_key, mailbox_id, message_ids):
         raise SystemExit(exc.status or 1)
 
 
+def build_receipt_payload(args):
+    status = (args.receipt_status or "").strip().lower()
+    if status not in AGENT_RECEIPT_STATUSES:
+        allowed = ", ".join(sorted(AGENT_RECEIPT_STATUSES))
+        raise SystemExit(f"--receipt-status must be one of: {allowed}")
+
+    payload = {"status": status}
+    optional = {
+        "external_run_id": args.external_run_id,
+        "summary": args.receipt_summary,
+        "error": args.receipt_error,
+    }
+    for key, value in optional.items():
+        if value is not None and value != "":
+            payload[key] = value
+    if args.action_required is not None:
+        payload["action_required"] = args.action_required
+    return payload
+
+
+def record_agent_receipts(base, api_key, message_ids, payload):
+    """Record per-message processing receipts before inbox ack.
+
+    Failing closed here keeps messages visible in the polling queue when the
+    operator-facing agent receipt was not persisted.
+    """
+    failed = False
+    for message_id in message_ids:
+        mid = urllib.parse.quote(message_id, safe="")
+        try:
+            print(http_text("POST", f"{base}/v1/messages/{mid}/agent-receipts", api_key, payload))
+        except RequestError as exc:
+            print(f"{message_id}: agent receipt failed: {exc.body}", file=sys.stderr)
+            failed = True
+    if failed:
+        raise SystemExit(1)
+
+
 def dispose_messages(base, api_key, command, message_ids):
     """Per-message disposition (#303): archive / unarchive / trash. These are
     message-scoped routes, so no mailbox id is needed. Each id is POSTed
@@ -198,6 +237,24 @@ def build_parser():
 
     ack_parser = sub.add_parser("ack", help="Acknowledge processed inbound messages.")
     ack_parser.add_argument("--message-id", action="append", required=True)
+    ack_parser.add_argument(
+        "--receipt-status",
+        default="processed",
+        help="Agent receipt status to record before ack: seen, processed, failed, or ignored. Defaults to processed.",
+    )
+    ack_parser.add_argument(
+        "--external-run-id",
+        default=os.environ.get("LOFTBOX_AGENT_RUN_ID"),
+        help="Optional agent/job/run id to include in the receipt.",
+    )
+    ack_parser.add_argument("--receipt-summary", help="Optional human-readable processing summary.")
+    ack_parser.add_argument("--receipt-error", help="Optional error text, usually with --receipt-status failed.")
+    ack_parser.add_argument(
+        "--action-required",
+        action="store_true",
+        default=None,
+        help="Mark the receipt as requiring operator action.",
+    )
 
     # Per-message disposition (#303) — message-scoped, no mailbox id needed.
     for name, help_text in (
@@ -218,6 +275,7 @@ def main():
     if args.command == "list":
         list_inbox(base, api_key, resolve_mailboxes(args), args.limit, args.cursor)
     elif args.command == "ack":
+        record_agent_receipts(base, api_key, args.message_id, build_receipt_payload(args))
         ack_inbox(base, api_key, resolve_ack_mailbox(args), args.message_id)
     elif args.command in ("archive", "unarchive", "trash"):
         dispose_messages(base, api_key, args.command, args.message_id)

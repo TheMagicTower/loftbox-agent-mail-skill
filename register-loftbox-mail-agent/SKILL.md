@@ -140,21 +140,30 @@ curl -sS "$BASE_URL/v1/mailboxes/mailbox_uuid/inbox?limit=20" \
   -H "Authorization: Bearer $LOFTBOX_API_KEY"
 ```
 
-Process each returned message exactly once. After processing has been durably recorded by the agent, acknowledge the message:
+Process each returned message exactly once. After processing has been durably
+recorded by the agent, record an agent receipt, then acknowledge the message:
 
 ```bash
+curl -sS -X POST "$BASE_URL/v1/messages/message_uuid_or_msg_public_id/agent-receipts" \
+  -H "Authorization: Bearer $LOFTBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"processed","summary":"Processed by the agent"}'
+
 curl -sS -X POST "$BASE_URL/v1/mailboxes/mailbox_uuid/inbox/ack" \
   -H "Authorization: Bearer $LOFTBOX_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"message_ids":["message_uuid_or_msg_public_id"]}'
 ```
 
-Do not ack before processing is complete. Ack is idempotent, so retrying the same `message_ids` is safe. Poll every 30-60 seconds while active, back off when the inbox is empty or the API returns a rate-limit response, and keep the API key server-side.
+Do not ack before processing is complete or before the agent receipt is
+recorded. Ack is idempotent, so retrying the same `message_ids` is safe. Poll
+every 30-60 seconds while active, back off when the inbox is empty or the API
+returns a rate-limit response, and keep the API key server-side.
 
 ## Follow-up Operation
 
 - Use `send-loftbox-mail` to send operational email through the created mailbox.
-- Use `check-loftbox-mail` to poll replies and ack processed messages when no webhook endpoint is available.
+- Use `check-loftbox-mail` to poll replies, record agent receipts, and ack processed messages when no webhook endpoint is available.
 - Use `curl -fsSL https://loftbox.net/install.sh | sh -s -- --check` at most once per day to check for skill updates. Do not auto-update without operator approval.
 
 ## 해지 (Offboarding)
