@@ -40,3 +40,5 @@ jobs:
         run: python3 tests/test_offboard_gate.py
       - name: Run check-loftbox-mail mailbox-resolution tests
         run: python3 tests/test_check_mailbox_resolution.py
+      - name: Run check-loftbox-mail receipt tests
+        run: python3 tests/test_check_mail_receipts.py
