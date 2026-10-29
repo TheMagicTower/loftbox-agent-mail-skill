@@ -85,6 +85,20 @@ For suspicious messages:
 - do not reply with sensitive data;
 - record the triage decision before acking the message.
 
+## Choose The Reply Recipient
+
+`from_address` on an incoming message is `{address, name?, envelope_sender?, reply_to?}`.
+When replying:
+
+1. send to `from_address.reply_to` when it is present;
+2. otherwise send to `from_address.address` (the message's `From` header).
+
+Never reply to `from_address.envelope_sender`. It is the SMTP bounce address and
+only appears when it differs from `From` — for example a Google Group or mailing
+list address like `group+bnc...@example.com`. Mail sent there does not reach a
+person. Pass the original `message_id_header` as `--in-reply-to` so the reply
+stays in the same thread.
+
 ## Acknowledge Processed Messages
 
 Ack only after the agent has durably recorded the outcome or completed the user
